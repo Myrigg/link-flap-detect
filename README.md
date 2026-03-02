@@ -26,8 +26,9 @@ chmod +x link-flap-detect.sh
 | `awk`, `sort`, `date`, `mktemp` | Core | Pre-installed (coreutils) |
 | `curl` | Prometheus enrichment (`-m`) | `apt install curl` |
 | `tshark` | PCAP analysis (`-p`) | `apt install tshark` — optional |
+| `iperf3` | Active bandwidth probe (`-3`) | `apt install iperf3` — optional |
 
-`curl` and `tshark` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install.
+`curl`, `tshark`, and `iperf3` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install.
 
 ## What it detects
 
@@ -53,6 +54,7 @@ chmod +x link-flap-detect.sh
 | `-p PCAP_FILE` | Analyse a packet capture file with tshark | (none) |
 | `-m URL` | Prometheus base URL for metric enrichment | (none) |
 | `-e URL` | node_exporter metrics URL (auto-probed at `http://localhost:9100`; pass `off` to disable) | `http://localhost:9100` |
+| `-3 SERVER` | Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment | (none) |
 | `-d IFACE` | Run diagnostic wizard for IFACE | (none) |
 | `-R BACKUP_ID` | Restore config files from a saved backup | (none) |
 | `-v` | Verbose — show every individual up/down event | off |
@@ -96,6 +98,16 @@ tshark -w /tmp/capture.pcap -a duration:60 -i eth0
 **PCAP + interface filter (only report stp-aabb events):**
 ```bash
 ./link-flap-detect.sh -p /tmp/capture.pcap -i stp-aabb
+```
+
+**Check bandwidth while a link is flapping (iperf3 enrichment):**
+```bash
+./link-flap-detect.sh -3 iperf3.example.com
+```
+
+**Wizard + iperf3 probe together:**
+```bash
+./link-flap-detect.sh -d eth0 -3 iperf3.example.com
 ```
 
 **Run the diagnostic wizard on eth0:**
@@ -216,6 +228,45 @@ If node_exporter is unreachable the tool runs normally and the enrichment block 
     TX errors       : 0 total
     RX drops        : 3 total
     TX drops        : 0 total
+```
+
+## iperf3 enrichment
+
+When a link is flapping the key question is "is it degraded when it IS up?" — iperf3 answers this
+with real bandwidth and TCP retransmit data from an active 5-second TCP test.
+
+**Prerequisite:** `apt install iperf3`
+
+Pass the target server hostname or IP with `-3`:
+
+```bash
+./link-flap-detect.sh -3 iperf3.example.com
+```
+
+For each flapping interface the tool runs the probe once (result cached) and shows a `[iperf3]`
+block below the `[FLAPPING]` line:
+
+- **Bandwidth** — measured throughput in Mbps
+- **Retransmits** — TCP retransmit count; highlighted yellow if > 0
+
+In verbose mode (`-v`), the block also appears for `[ACTIVE]` interfaces below threshold.
+
+The diagnostic wizard (`-d IFACE`) includes iperf3 results in the report and flags retransmits > 0
+as a `[WARN]` finding with a recommendation to test longer and check switch port buffers.
+
+Synthetic tshark interfaces (`stp-*`, `lacp-*`) are skipped — they have no corresponding
+network path to test.
+
+If iperf3 is not installed and `-3` is passed the tool exits immediately with an error message.
+If the server is unreachable or the test fails the section is silently omitted.
+
+**Example output:**
+```
+[FLAPPING] eth0
+  Transitions : 4  |  Events: 5  |  Span: 10:00:00–10:10:00 (10m 0s)
+  [iperf3]  → iperf3.example.com
+    Bandwidth     : 943.0 Mbps
+    Retransmits   : 0
 ```
 
 ## tshark / PCAP mode

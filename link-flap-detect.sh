@@ -16,6 +16,7 @@
 #   -p PCAP_FILE  Analyse a packet capture file with tshark (requires tshark)
 #   -m URL        Prometheus base URL for metric enrichment (e.g. http://localhost:9090)
 #   -e URL        node_exporter metrics URL (default: http://localhost:9100; 'off' to disable)
+#   -3 SERVER     Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment
 #   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
 #   -R BACKUP_ID  Restore config files from a saved backup (use 'list' to show all backups)
 #   -v            Verbose — show every individual up/down event
@@ -33,6 +34,7 @@ IFACE_FILTER=${IFACE_FILTER:-""}
 PCAP_FILE=${PCAP_FILE:-""}
 PROM_URL=${PROM_URL:-""}
 NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-http://localhost:9100}"
+IPERF3_SERVER="${IPERF3_SERVER:-}"
 DIAG_IFACE=${DIAG_IFACE:-""}
 ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
@@ -54,7 +56,7 @@ usage() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-while getopts ":w:t:i:p:m:e:d:R:vh" opt; do
+while getopts ":w:t:i:p:m:e:3:d:R:vh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
@@ -62,6 +64,7 @@ while getopts ":w:t:i:p:m:e:d:R:vh" opt; do
     p) PCAP_FILE="$OPTARG"      ;;
     m) PROM_URL="$OPTARG"       ;;
     e) NODE_EXPORTER_URL="$OPTARG" ;;
+    3) IPERF3_SERVER="$OPTARG"  ;;
     d) DIAG_IFACE="$OPTARG"     ;;
     R) ROLLBACK_ID="$OPTARG"    ;;
     v) VERBOSE=1                ;;
@@ -87,6 +90,10 @@ fi
 if [[ -n "$PROM_URL" ]] && ! command -v curl &>/dev/null; then
   echo "Error: -m requires curl (not found)." >&2; exit 1
 fi
+if [[ -n "$IPERF3_SERVER" ]] && [[ -z "${_LINK_FLAP_TEST_IPERF3:-}" ]] && \
+   ! command -v iperf3 &>/dev/null; then
+  echo "Error: -3 requires iperf3 (not found). Install with: apt install iperf3" >&2; exit 1
+fi
 
 # ── Backup & Rollback ─────────────────────────────────────────────────────────
 
@@ -111,6 +118,9 @@ create_backup() {
     cp -a "$src" "$dest/" 2>/dev/null && manifest+=("$(basename "$src")")
   done
   printf '%s\n' "iface=$iface" "ts=$ts" "files=${manifest[*]}" > "${dest}/.manifest"
+  if [[ ${#manifest[@]} -eq 0 ]]; then
+    echo "Warning: no config files found to back up (re-run as root to include /etc/ files)." >&2
+  fi
   echo "$backup_id"
 }
 
@@ -160,12 +170,12 @@ do_rollback() {
       (( failed++ )) || true
     fi
   done
-  echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
   if [[ $failed -gt 0 ]]; then
-    echo -e "  ${YELLOW}${failed} item(s) could not be restored — re-run with sudo:${RESET}" >&2
+    echo -e "  ${YELLOW}Partial restore: ${restored} item(s) restored, ${failed} could not be written — re-run with sudo:${RESET}" >&2
     echo -e "  sudo ./link-flap-detect.sh -R ${backup_id}" >&2
     exit 1
   fi
+  echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
 }
 
 # ── Temp file — cleaned up on exit ───────────────────────────────────────────
@@ -231,6 +241,11 @@ run_wizard() {
   ne_rx_drop=$(_ne_val node_network_receive_drop_total "$iface")
   ne_tx_drop=$(_ne_val node_network_transmit_drop_total "$iface")
 
+  # iperf3 active probe — uses _IPERF3_RESULT_CACHE (run_iperf3 called at Step 3 entry)
+  local iperf3_bps iperf3_retransmits
+  iperf3_bps=$(_iperf3_val "end.sum_sent.bits_per_second")
+  iperf3_retransmits=$(_iperf3_val "end.sum_sent.retransmits")
+
   local speed duplex autoneg
   speed=$(echo "$ethtool_out" | grep -i "Speed:" | awk '{print $2}' | head -1 || true)
   duplex=$(echo "$ethtool_out" | grep -i "Duplex:" | awk '{print $2}' | head -1 || true)
@@ -290,6 +305,12 @@ run_wizard() {
   # node_exporter: TX errors > 0
   if [[ -n "$ne_tx_err" ]] && [[ "$ne_tx_err" =~ ^[0-9]+$ ]] && [[ "$ne_tx_err" -gt 0 ]]; then
     findings+=("WARN"$'\t'"TX errors (node_exporter)"$'\t'"${ne_tx_err} TX errors seen — possible congestion or hardware fault"$'\t'"Check switch port; run: ethtool -S ${iface} | grep -i error")
+  fi
+
+  # iperf3: TCP retransmits > 0
+  if [[ -n "$iperf3_retransmits" ]] && [[ "$iperf3_retransmits" =~ ^[0-9]+$ ]] && \
+     [[ "$iperf3_retransmits" -gt 0 ]]; then
+    findings+=("WARN"$'\t'"TCP retransmits during iperf3 test"$'\t'"${iperf3_retransmits} retransmits in 5s test to ${IPERF3_SERVER} — congestion or packet loss"$'\t'"Test longer: iperf3 -c ${IPERF3_SERVER} -t 30; check switch port buffers")
   fi
 
   # 5. Pattern analysis — use TMPFILE events for the interface
@@ -357,6 +378,16 @@ run_wizard() {
     if [[ -n "$ne_tx_err"    ]]; then _rpt "  TX errors      : ${ne_tx_err} total"; fi
     if [[ -n "$ne_rx_drop"   ]]; then _rpt "  RX drops       : ${ne_rx_drop} total"; fi
     if [[ -n "$ne_tx_drop"   ]]; then _rpt "  TX drops       : ${ne_tx_drop} total"; fi
+  fi
+  if [[ -n "$_IPERF3_RESULT_CACHE" ]]; then
+    local mbps_str="?"
+    if [[ -n "$iperf3_bps" ]]; then
+      mbps_str=$(python3 -c "import sys; print(f'{float(sys.argv[1])/1e6:.1f}')" "$iperf3_bps" 2>/dev/null || echo "?")
+    fi
+    _rpt ""
+    _rpt "${BOLD}iperf3 Results${RESET}  (→ ${IPERF3_SERVER})"
+    _rpt "  bandwidth      : ${mbps_str} Mbps"
+    if [[ -n "$iperf3_retransmits" ]]; then _rpt "  retransmits    : ${iperf3_retransmits}"; fi
   fi
   _rpt ""
   _rpt "${BOLD}Findings${RESET}"
@@ -582,6 +613,61 @@ show_node_exporter_context() {
   [[ -n "$tx_drop" ]] && printf "    TX drops        : %s total\n" "$tx_drop"
 }
 
+# ── iperf3 ────────────────────────────────────────────────────────────────────
+_IPERF3_RESULT_CACHE=""
+
+run_iperf3() {
+  [[ -z "$IPERF3_SERVER" ]] && return 1
+  if [[ -n "${_LINK_FLAP_TEST_IPERF3:-}" ]]; then
+    _IPERF3_RESULT_CACHE=$(cat "$_LINK_FLAP_TEST_IPERF3" 2>/dev/null || true)
+  else
+    _IPERF3_RESULT_CACHE=$(iperf3 -c "$IPERF3_SERVER" -t 5 --json 2>/dev/null || true)
+  fi
+  [[ -n "$_IPERF3_RESULT_CACHE" ]]
+}
+
+_iperf3_val() {
+  local field="$1"
+  [[ -z "$_IPERF3_RESULT_CACHE" ]] && return
+  python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    v = d
+    for p in sys.argv[1].split('.'):
+        v = v[p]
+    print(v)
+except Exception:
+    pass
+" "$field" <<< "$_IPERF3_RESULT_CACHE" 2>/dev/null || true
+}
+
+show_iperf3_context() {
+  local iface="$1"
+  [[ -z "$_IPERF3_RESULT_CACHE" ]] && return
+  [[ "$iface" =~ ^(stp|lacp)- ]] && return
+
+  local bps retransmits
+  bps=$(_iperf3_val "end.sum_sent.bits_per_second")
+  retransmits=$(_iperf3_val "end.sum_sent.retransmits")
+
+  [[ -z "$bps" && -z "$retransmits" ]] && return
+
+  echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}"
+  if [[ -n "$bps" ]]; then
+    local mbps
+    mbps=$(python3 -c "import sys; print(f'{float(sys.argv[1])/1e6:.1f}')" "$bps" 2>/dev/null || echo "?")
+    echo "    Bandwidth     : ${mbps} Mbps"
+  fi
+  if [[ -n "$retransmits" ]]; then
+    if [[ "$retransmits" =~ ^[0-9]+$ ]] && [[ "$retransmits" -gt 0 ]]; then
+      echo -e "    Retransmits   : ${YELLOW}${retransmits}${RESET}"
+    else
+      echo "    Retransmits   : ${retransmits}"
+    fi
+  fi
+}
+
 parse_events() {
   # Reads raw log lines from stdin, writes "epoch iface STATE" to stdout.
   # Implemented entirely in awk — no subshell spawning per line.
@@ -739,6 +825,7 @@ sort -u "$TMPFILE" -o "$TMPFILE"
 
 # Probe node_exporter once; result cached for wizard and per-interface blocks below
 fetch_node_exporter || true
+run_iperf3 || true
 
 if [[ -n "$DIAG_IFACE" ]]; then run_wizard "$DIAG_IFACE"; fi
 
@@ -753,6 +840,7 @@ echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} t
 [[ -n "$IFACE_FILTER" ]] && echo -e "Interface filter: ${CYAN}${IFACE_FILTER}${RESET}"
 [[ -n "$PROM_URL" ]] && echo -e "Prometheus: ${CYAN}${PROM_URL}${RESET}"
 [[ -n "$_NE_METRICS_CACHE" ]] && echo -e "node_exporter: ${CYAN}${NODE_EXPORTER_URL}${RESET}"
+[[ -n "$_IPERF3_RESULT_CACHE" ]] && echo -e "iperf3: ${CYAN}${IPERF3_SERVER}${RESET}"
 echo ""
 
 if [[ ${#IFACES[@]} -eq 0 ]]; then
@@ -806,6 +894,7 @@ for iface in "${IFACES[@]}"; do
     fi
     show_prometheus_context "$iface"
     show_node_exporter_context "$iface"
+    show_iperf3_context "$iface"
     echo ""
   else
     if [[ "$VERBOSE" -eq 1 ]]; then
@@ -815,6 +904,7 @@ for iface in "${IFACES[@]}"; do
       done
       show_prometheus_context "$iface"
       show_node_exporter_context "$iface"
+      show_iperf3_context "$iface"
       echo ""
     fi
   fi
