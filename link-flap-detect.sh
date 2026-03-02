@@ -118,6 +118,9 @@ create_backup() {
     cp -a "$src" "$dest/" 2>/dev/null && manifest+=("$(basename "$src")")
   done
   printf '%s\n' "iface=$iface" "ts=$ts" "files=${manifest[*]}" > "${dest}/.manifest"
+  if [[ ${#manifest[@]} -eq 0 ]]; then
+    echo "Warning: no config files found to back up (re-run as root to include /etc/ files)." >&2
+  fi
   echo "$backup_id"
 }
 
@@ -167,12 +170,12 @@ do_rollback() {
       (( failed++ )) || true
     fi
   done
-  echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
   if [[ $failed -gt 0 ]]; then
-    echo -e "  ${YELLOW}${failed} item(s) could not be restored — re-run with sudo:${RESET}" >&2
+    echo -e "  ${YELLOW}Partial restore: ${restored} item(s) restored, ${failed} could not be written — re-run with sudo:${RESET}" >&2
     echo -e "  sudo ./link-flap-detect.sh -R ${backup_id}" >&2
     exit 1
   fi
+  echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
 }
 
 # ── Temp file — cleaned up on exit ───────────────────────────────────────────

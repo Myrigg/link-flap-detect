@@ -26,8 +26,9 @@ chmod +x link-flap-detect.sh
 | `awk`, `sort`, `date`, `mktemp` | Core | Pre-installed (coreutils) |
 | `curl` | Prometheus enrichment (`-m`) | `apt install curl` |
 | `tshark` | PCAP analysis (`-p`) | `apt install tshark` — optional |
+| `iperf3` | Active bandwidth probe (`-3`) | `apt install iperf3` — optional |
 
-`curl` and `tshark` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install.
+`curl`, `tshark`, and `iperf3` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install.
 
 ## What it detects
 
