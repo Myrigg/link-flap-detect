@@ -102,6 +102,11 @@ if [[ -n "$FOLLOW_SECONDS" ]] && \
    ( ! [[ "$FOLLOW_SECONDS" =~ ^[0-9]+$ ]] || [[ "$FOLLOW_SECONDS" -lt 1 ]] ); then
   echo "Error: -f must be a positive integer (seconds)." >&2; exit 1
 fi
+if [[ -n "$NODE_EXPORTER_URL" ]] && \
+   [[ "$NODE_EXPORTER_URL" != "off" ]] && \
+   ! [[ "$NODE_EXPORTER_URL" =~ ^https?:// ]]; then
+  echo "Error: -n must be 'off' or a URL starting with http:// or https://" >&2; exit 1
+fi
 
 # ── Backup & Rollback ─────────────────────────────────────────────────────────
 
@@ -181,7 +186,7 @@ do_rollback() {
   if [[ $failed -gt 0 ]]; then
     echo -e "  ${YELLOW}Partial restore: ${restored} item(s) restored, ${failed} could not be written — re-run with sudo:${RESET}" >&2
     echo -e "  sudo ./flap -r ${backup_id}" >&2
-    exit 1
+    exit 2
   fi
   echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
 }
@@ -342,6 +347,8 @@ run_wizard() {
       [[ $interval -lt $min_interval ]] && min_interval=$interval
     done
     spread=$(( max_interval - min_interval ))
+    # Spread < 30 s across all inter-event gaps means events are evenly spaced.
+    # Even spacing suggests a timer-driven cause: STP hello/TCN, LACP PDU, or power-management cycle.
     if [[ $spread -lt 30 ]]; then
       findings+=("WARN"$'\t'"Regular flap interval detected"$'\t'"Inter-event intervals are consistent (spread ${spread}s) — may indicate STP, LACP, or power-cycle timer"$'\t'"Check STP: bridge link; check LACP: teamdctl; check power management")
     fi
@@ -554,6 +561,7 @@ show_prometheus_context() {
 
   [[ -z "$up" && -z "$carrier" ]] && return
 
+  _PROM_REACHED=1
   echo -e "  ${CYAN}[Prometheus]${RESET}"
   if [[ -n "$up" ]]; then
     local s; [[ "$up" == "1" ]] && s="${GREEN}UP${RESET}" || s="${RED}DOWN${RESET}"
@@ -568,6 +576,7 @@ show_prometheus_context() {
 
 # ── node_exporter ─────────────────────────────────────────────────────────────
 _NE_METRICS_CACHE=""
+_PROM_REACHED=0
 
 fetch_node_exporter() {
   # Fetch /metrics from node_exporter; cache result in _NE_METRICS_CACHE.
@@ -780,6 +789,7 @@ parse_events() {
   ' | \
   # Second pass: convert ts_raw → epoch using date(1) once per unique timestamp
   awk -F'\t' '
+  BEGIN { now = systime() }
   {
     ts  = $1
     iface = $2
@@ -789,6 +799,11 @@ parse_events() {
       cmd = "date -d \047" ts "\047 +%s 2>/dev/null || echo 0"
       cmd | getline result
       close(cmd)
+      # Guard against syslog timestamps without a year (e.g. "Dec 31 14:00:00").
+      # date(1) picks the current year, producing a future epoch when the log entry
+      # is from December and the tool runs in January. Pull it back one year.
+      if ((result + 0) > (now + 86400))
+        result = result - 31536000
       epoch_cache[ts] = result
     }
     ep = epoch_cache[ts]
@@ -927,6 +942,13 @@ for iface in "${IFACES[@]}"; do
   fi
 done
 
+# Warn if Prometheus was configured but returned no data (likely unreachable).
+if [[ -n "$PROM_URL" ]] && [[ "$_PROM_REACHED" -eq 0 ]] && \
+   [[ -z "${_LINK_FLAP_TEST_PROM:-}" ]]; then
+  echo -e "${DIM}(Prometheus at ${PROM_URL} returned no data — verify connectivity)${RESET}"
+  echo ""
+fi
+
 # ── Cross-interface correlation ────────────────────────────────────────────────
 # If 2+ interfaces are flapping, check whether any of their events fell in the
 # same 10-second bucket — a strong hint of a common upstream cause.
@@ -960,7 +982,8 @@ if [[ "$FLAPPING_FOUND" -eq 0 ]]; then
   echo -e "${GREEN}No flapping detected${RESET} in the last ${WINDOW_MINUTES} minutes (threshold: ${FLAP_THRESHOLD} transitions)."
   echo ""
 else
-  echo -e "${BOLD}Summary:${RESET} ${RED}${FLAPPING_COUNT} interface(s) flapping${RESET} in the last ${WINDOW_MINUTES} minutes."
+  _plural="s"; [[ "$FLAPPING_COUNT" -eq 1 ]] && _plural=""
+  echo -e "${BOLD}Summary:${RESET} ${RED}${FLAPPING_COUNT} interface${_plural} flapping${RESET} in the last ${WINDOW_MINUTES} minutes."
   echo ""
 fi
 

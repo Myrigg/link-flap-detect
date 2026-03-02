@@ -62,6 +62,7 @@ chmod +x flap
 | `-h` | Show help | |
 
 Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRESHOLD`, `IFACE_FILTER`.
+Command-line flags take precedence over environment variables when both are set.
 
 ## Examples
 
@@ -337,7 +338,8 @@ for each failed file, and shows the exact `sudo` command to retry.
 | Code | Meaning |
 |---|---|
 | `0` | No flapping detected (or wizard / rollback completed successfully) |
-| `1` | One or more interfaces are flapping; or rollback backup not found; or restoration failed (permission denied) |
+| `1` | One or more interfaces are flapping; or rollback backup not found |
+| `2` | Rollback partially failed — some files could not be written (re-run with `sudo`) |
 
 ## Virtual interface filtering
 

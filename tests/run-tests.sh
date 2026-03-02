@@ -194,7 +194,7 @@ EOF
 run "$t" -w 60 -t 3
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\]" \
-   && echo "$OUT" | grep -q "1 interface(s) flapping"; then
+   && echo "$OUT" | grep -q "1 interface flapping"; then
   pass "4 transitions ≥ threshold 3: exit 1, [FLAPPING] + summary count reported"
 else
   fail "4 transitions ≥ threshold 3: exit 1, [FLAPPING] + summary count reported" "exit=$EXITCODE\n$OUT"
@@ -261,7 +261,7 @@ run "$t" -w 60 -t 3
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\].*eth0" \
    && ! echo "$OUT" | grep -q "\[FLAPPING\].*eth1" \
-   && echo "$OUT" | grep -q "1 interface(s) flapping"; then
+   && echo "$OUT" | grep -q "1 interface flapping"; then
   pass "multiple ifaces: only flapping eth0 reported; stable eth1 silent; summary count=1"
 else
   fail "multiple ifaces: only flapping eth0 reported; stable eth1 silent" "exit=$EXITCODE\n$OUT"
@@ -987,10 +987,11 @@ echo "up" > "$wiz_dir/operstate"
 run_wizard_iperf3_test "$wiz_dir" "$IPERF3_RETRANS" -d eth0 -w 60
 if [[ $EXITCODE -eq 0 ]] \
    && echo "$OUT" | grep -q "\[WARN\]" \
-   && echo "$OUT" | grep -qi "retransmit"; then
-  pass "48: iperf3 wizard: retransmits=12 → [WARN] with 'retransmit' in output"
+   && echo "$OUT" | grep -qi "retransmit" \
+   && echo "$OUT" | grep -qi "bandwidth"; then
+  pass "48: iperf3 wizard: retransmits=12 → [WARN] with 'retransmit' + bandwidth in output"
 else
-  fail "48: iperf3 wizard: retransmits=12 → [WARN] with 'retransmit' in output" "exit=$EXITCODE\n$OUT"
+  fail "48: iperf3 wizard: retransmits=12 → [WARN] with 'retransmit' + bandwidth in output" "exit=$EXITCODE\n$OUT"
 fi
 
 # 49. Live iperf3 probe — always SKIP (no server available in automated suite)
@@ -1109,6 +1110,73 @@ if [[ $EXITCODE -eq 1 ]] \
   pass "58: auto-wizard fires on flapping detection (no -d flag needed)"
 else
   fail "58: auto-wizard fires on flapping detection (no -d flag needed)" "exit=$EXITCODE\n$OUT"
+fi
+
+# 59. -n with invalid (non-http) URL → exit 1 + error
+t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
+run "$t" -n ftp://bad-url
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "59: -n ftp://bad-url → exit 1 + error (-n URL validation)"
+else
+  fail "59: -n ftp://bad-url → exit 1 + error (-n URL validation)" "exit=$EXITCODE\n$OUT"
+fi
+
+# 60. Cross-year syslog: future-month timestamps corrected to previous year → flapping detected
+#     Create syslog-format entries dated 6 months in the future. Without the year
+#     correction, date(1) would parse them as future epochs and the window filter
+#     would drop them.  With the fix they are shifted back one year (past) and detected.
+FUT_BASE=$(date -d "+6 months" "+%b %_d")
+FUT_H=$(date "+%H")
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+${FUT_BASE} ${FUT_H}:00:00 host kernel: eth0: NIC Link is Down
+${FUT_BASE} ${FUT_H}:00:02 host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+${FUT_BASE} ${FUT_H}:00:04 host kernel: eth0: NIC Link is Down
+${FUT_BASE} ${FUT_H}:00:06 host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+${FUT_BASE} ${FUT_H}:00:08 host kernel: eth0: NIC Link is Down
+EOF
+run "$t" -w 500000 -t 3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "60: cross-year syslog timestamps corrected — flapping detected despite future-year parse"
+else
+  fail "60: cross-year syslog timestamps corrected — flapping detected despite future-year parse" "exit=$EXITCODE\n$OUT"
+fi
+
+# 61. Partial rollback: backup exists but /etc/ is not writable → exit 2 + "Partial restore"
+#     Skip when running as root since root can always write /etc/.
+if [[ $(id -u) -eq 0 ]]; then
+  skip "61: partial rollback → exit 2 (skipped — running as root, /etc/ is writable)"
+else
+  mkdir -p "$TESTDIR/backups/test-partial-restore/netplan"
+  echo "network: {}" > "$TESTDIR/backups/test-partial-restore/netplan/00-test.yaml"
+  printf '%s\n' "iface=eth0" "ts=20260101-000000" "files=netplan" \
+    > "$TESTDIR/backups/test-partial-restore/.manifest"
+  run_rollback_test "test-partial-restore"
+  if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "partial restore"; then
+    pass "61: partial rollback (no /etc/ write perms) → exit 2 + 'Partial restore'"
+  else
+    fail "61: partial rollback (no /etc/ write perms) → exit 2 + 'Partial restore'" "exit=$EXITCODE\n$OUT"
+  fi
+fi
+
+# 62. Prometheus set but unreachable → dim note "returned no data" in output
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_INPUT="$t" bash "$SCRIPT" -w 60 -t 3 \
+      -m http://127.0.0.1:19999 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && echo "$OUT" | grep -q "returned no data"; then
+  pass "62: Prometheus unreachable → dim 'returned no data' note in output"
+else
+  fail "62: Prometheus unreachable → dim 'returned no data' note in output" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
