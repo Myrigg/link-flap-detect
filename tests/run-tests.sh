@@ -54,6 +54,50 @@ run() {
   OUT=$(_LINK_FLAP_TEST_INPUT="$f" bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
 }
 
+# run_tshark TSHARK_DATA_FILE [SCRIPT_ARGS...]
+# Injects pre-canned "epoch iface state" lines via _LINK_FLAP_TEST_TSHARK.
+run_tshark() {
+  local f="$1"; shift
+  OUT=''; EXITCODE=0
+  OUT=$(_LINK_FLAP_TEST_TSHARK="$f" bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_with_prom INPUT_FILE PROM_JSON_FILE [SCRIPT_ARGS...]
+# Combines _LINK_FLAP_TEST_INPUT and _LINK_FLAP_TEST_PROM for Prometheus enrichment tests.
+run_with_prom() {
+  local input_f="$1" prom_f="$2"; shift 2
+  OUT=''; EXITCODE=0
+  OUT=$(_LINK_FLAP_TEST_INPUT="$input_f" _LINK_FLAP_TEST_PROM="$prom_f" \
+        bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_tshark_with_prom TSHARK_DATA_FILE PROM_JSON_FILE [SCRIPT_ARGS...]
+# Combines _LINK_FLAP_TEST_TSHARK and _LINK_FLAP_TEST_PROM.
+run_tshark_with_prom() {
+  local tshark_f="$1" prom_f="$2"; shift 2
+  OUT=''; EXITCODE=0
+  OUT=$(_LINK_FLAP_TEST_TSHARK="$tshark_f" _LINK_FLAP_TEST_PROM="$prom_f" \
+        bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_wizard_test WIZARD_DIR [SCRIPT_ARGS...]
+# Runs the diagnostic wizard with canned sysfs/command output files.
+run_wizard_test() {
+  local wiz_dir="$1"; shift
+  OUT=''; EXITCODE=0
+  OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+        _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
+        bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_rollback_test BACKUP_ID [SCRIPT_ARGS...]
+# Runs rollback/list with BACKUP_DIR redirected to the test directory.
+run_rollback_test() {
+  local bid="$1"; shift
+  OUT=''; EXITCODE=0
+  OUT=$(BACKUP_DIR="$TESTDIR/backups" bash "$SCRIPT" -R "$bid" "$@" 2>&1) || EXITCODE=$?
+}
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}link-flap-detect.sh — test suite${RESET}"
@@ -395,6 +439,228 @@ if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -qE "Events: [2-9]"; then
   pass "NM state change: malformed line after valid does not produce spurious event"
 else
   fail "NM state change: malformed line after valid does not produce spurious event" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── tshark tests (23–28) ──────────────────────────────────────────────────────
+# These tests mock tshark output using _LINK_FLAP_TEST_TSHARK. tshark need not
+# be installed — the test injects pre-canned "epoch iface state" lines directly.
+
+# 23. STP: 4 TCN events on stp-aabb → 3 transitions ≥ threshold 3 → exit 1, [FLAPPING]
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+1709386820 stp-aabb DOWN
+1709386880 stp-aabb UP
+EOF
+run_tshark "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "tshark STP: 4 TCN events → stp-aabb flapping detected"
+else
+  fail "tshark STP: 4 TCN events → stp-aabb flapping detected" "exit=$EXITCODE\n$OUT"
+fi
+
+# 24. STP: 2 TCN events → 1 transition < threshold 3 → exit 0
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+EOF
+run_tshark "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "tshark STP: 2 TCN events → below threshold, no flapping"
+else
+  fail "tshark STP: 2 TCN events → below threshold, no flapping" "exit=$EXITCODE\n$OUT"
+fi
+
+# 25. LACP: alternating sync/desync on lacp-ccdd → flapping detected
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 lacp-ccdd DOWN
+1709386760 lacp-ccdd UP
+1709386820 lacp-ccdd DOWN
+1709386880 lacp-ccdd UP
+EOF
+run_tshark "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "tshark LACP: alternating sync/desync → lacp-ccdd flapping detected"
+else
+  fail "tshark LACP: alternating sync/desync → lacp-ccdd flapping detected" "exit=$EXITCODE\n$OUT"
+fi
+
+# 26. LACP: all UP (no state change) → exit 0, no flapping
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 lacp-ccdd UP
+1709386760 lacp-ccdd UP
+1709386820 lacp-ccdd UP
+1709386880 lacp-ccdd UP
+EOF
+run_tshark "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "tshark LACP: all UP → no state transitions, no flapping"
+else
+  fail "tshark LACP: all UP → no state transitions, no flapping" "exit=$EXITCODE\n$OUT"
+fi
+
+# 27. Interface filter -i stp-aabb: stp-aabb flaps, lacp-ccdd does not match → exit 1
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+1709386820 stp-aabb DOWN
+1709386880 stp-aabb UP
+1709386700 lacp-ccdd DOWN
+1709386760 lacp-ccdd UP
+1709386820 lacp-ccdd DOWN
+1709386880 lacp-ccdd UP
+EOF
+run_tshark "$t" -w 60 -t 3 -i stp-aabb
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\].*stp-aabb" \
+   && ! echo "$OUT" | grep -q "lacp-ccdd"; then
+  pass "tshark -i stp-aabb filter: only stp-aabb reported, lacp-ccdd excluded"
+else
+  fail "tshark -i stp-aabb filter: only stp-aabb reported, lacp-ccdd excluded" "exit=$EXITCODE\n$OUT"
+fi
+
+# 28. Mixed STP + LACP: both interfaces flap independently → exit 1, 2 [FLAPPING] lines
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+1709386820 stp-aabb DOWN
+1709386880 stp-aabb UP
+1709386700 lacp-ccdd DOWN
+1709386760 lacp-ccdd UP
+1709386820 lacp-ccdd DOWN
+1709386880 lacp-ccdd UP
+EOF
+run_tshark "$t" -w 60 -t 3
+flap_count=$(echo "$OUT" | grep -c "\[FLAPPING\]" || true)
+if [[ $EXITCODE -eq 1 ]] && [[ "$flap_count" -eq 2 ]]; then
+  pass "tshark mixed STP+LACP: both stp-aabb and lacp-ccdd reported as flapping"
+else
+  fail "tshark mixed STP+LACP: both stp-aabb and lacp-ccdd reported as flapping" "exit=$EXITCODE flap_count=$flap_count\n$OUT"
+fi
+
+# ── Prometheus enrichment tests (29–31) ───────────────────────────────────────
+# Tests mock the Prometheus API response via _LINK_FLAP_TEST_PROM. No real
+# Prometheus server needed. Two canned response files are created per run.
+
+PROM_DATA=$(mktemp "$TESTDIR/prom-data-XXXXXX.json")
+PROM_EMPTY=$(mktemp "$TESTDIR/prom-empty-XXXXXX.json")
+echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1709386700,"1"]}]}}' > "$PROM_DATA"
+echo '{"status":"success","data":{"resultType":"vector","result":[]}}' > "$PROM_EMPTY"
+
+# 29. eth0 flapping + canned Prometheus data → [Prometheus] block with "Current state"
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+run_with_prom "$t" "$PROM_DATA" -w 60 -t 3 -m http://prom:9090
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && echo "$OUT" | grep -q "\[Prometheus\]" \
+   && echo "$OUT" | grep -q "Current state"; then
+  pass "Prometheus enrichment: flapping eth0 shows [Prometheus] block with current state"
+else
+  fail "Prometheus enrichment: flapping eth0 shows [Prometheus] block with current state" "exit=$EXITCODE\n$OUT"
+fi
+
+# 30. eth0 flapping + empty Prometheus result → no [Prometheus] section
+run_with_prom "$t" "$PROM_EMPTY" -w 60 -t 3 -m http://prom:9090
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && ! echo "$OUT" | grep -q "\[Prometheus\]"; then
+  pass "Prometheus enrichment: empty result → no [Prometheus] section shown"
+else
+  fail "Prometheus enrichment: empty result → no [Prometheus] section shown" "exit=$EXITCODE\n$OUT"
+fi
+
+# 31. stp-aabb flapping + canned Prometheus data → [Prometheus] skipped (synthetic iface)
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+1709386820 stp-aabb DOWN
+1709386880 stp-aabb UP
+EOF
+run_tshark_with_prom "$t" "$PROM_DATA" -w 60 -t 3 -m http://prom:9090
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && ! echo "$OUT" | grep -q "\[Prometheus\]"; then
+  pass "Prometheus enrichment: synthetic stp-* iface → [Prometheus] block skipped"
+else
+  fail "Prometheus enrichment: synthetic stp-* iface → [Prometheus] block skipped" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── Backup/Rollback + Diagnostic Wizard tests (32–37) ────────────────────────
+
+# 32. Wizard creates backup dir and a subdirectory inside it
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+echo "up" > "$wiz_dir/operstate"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+backup_count=$(ls -1 "$TESTDIR/backups" 2>/dev/null | wc -l)
+if [[ $EXITCODE -eq 0 ]] && [[ -d "$TESTDIR/backups" ]] && [[ "$backup_count" -gt 0 ]]; then
+  pass "wizard: creates backup dir with at least one backup subdirectory"
+else
+  fail "wizard: creates backup dir with at least one backup subdirectory" "exit=$EXITCODE backups=$backup_count\n$OUT"
+fi
+
+# 33. -R list shows available backups
+mkdir -p "$TESTDIR/backups/20240101-000000-eth0"
+printf '%s\n' "iface=eth0" "ts=20240101-000000" "files=" \
+  > "$TESTDIR/backups/20240101-000000-eth0/.manifest"
+run_rollback_test "list"
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "20240101-000000-eth0"; then
+  pass "rollback: -R list shows available backups"
+else
+  fail "rollback: -R list shows available backups" "exit=$EXITCODE\n$OUT"
+fi
+
+# 34. -R nonexistent-id → exit 1 + "not found"
+run_rollback_test "nonexistent-backup-id-xyz"
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "not found"; then
+  pass "rollback: -R nonexistent-id → exit 1 + 'not found'"
+else
+  fail "rollback: -R nonexistent-id → exit 1 + 'not found'" "exit=$EXITCODE\n$OUT"
+fi
+
+# 35. EEE enabled → [CAUSE] + "EEE" in output
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+echo "EEE status: enabled" > "$wiz_dir/ethtool_eee"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[CAUSE\]" \
+   && echo "$OUT" | grep -qi "EEE"; then
+  pass "wizard: EEE enabled → [CAUSE] with 'EEE' in output"
+else
+  fail "wizard: EEE enabled → [CAUSE] with 'EEE' in output" "exit=$EXITCODE\n$OUT"
+fi
+
+# 36. power/control=auto → [CAUSE] + "power" in output
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+echo "auto" > "$wiz_dir/power_control"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[CAUSE\]" \
+   && echo "$OUT" | grep -qi "power"; then
+  pass "wizard: power/control=auto → [CAUSE] with 'power' in output"
+else
+  fail "wizard: power/control=auto → [CAUSE] with 'power' in output" "exit=$EXITCODE\n$OUT"
+fi
+
+# 37. High carrier changes (50) → [WARN] in output
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+echo "50" > "$wiz_dir/carrier_changes"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[WARN\]"; then
+  pass "wizard: carrier_changes=50 → [WARN] in output"
+else
+  fail "wizard: carrier_changes=50 → [WARN] in output" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

@@ -13,6 +13,10 @@
 #   -w MINUTES    Time window to scan back from now (default: 60)
 #   -t COUNT      Number of transitions to consider flapping (default: 3)
 #   -i IFACE      Limit output to a specific interface (e.g. eth0, ens18)
+#   -p PCAP_FILE  Analyse a packet capture file with tshark (requires tshark)
+#   -m URL        Prometheus base URL for metric enrichment (e.g. http://localhost:9090)
+#   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
+#   -R BACKUP_ID  Restore config files from a saved backup (use 'list' to show all backups)
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #
@@ -25,6 +29,12 @@ set -euo pipefail
 WINDOW_MINUTES=${WINDOW_MINUTES:-60}
 FLAP_THRESHOLD=${FLAP_THRESHOLD:-3}
 IFACE_FILTER=${IFACE_FILTER:-""}
+PCAP_FILE=${PCAP_FILE:-""}
+PROM_URL=${PROM_URL:-""}
+DIAG_IFACE=${DIAG_IFACE:-""}
+ROLLBACK_ID=${ROLLBACK_ID:-""}
+BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
+REPORT_DIR="${REPORT_DIR:-${HOME}/.local/share/link-flap/reports}"
 VERBOSE=0
 
 # ── Colours (disabled when not a terminal) ────────────────────────────────────
@@ -42,17 +52,24 @@ usage() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-while getopts ":w:t:i:vh" opt; do
+while getopts ":w:t:i:p:m:d:R:vh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
     i) IFACE_FILTER="$OPTARG"   ;;
+    p) PCAP_FILE="$OPTARG"      ;;
+    m) PROM_URL="$OPTARG"       ;;
+    d) DIAG_IFACE="$OPTARG"     ;;
+    R) ROLLBACK_ID="$OPTARG"    ;;
     v) VERBOSE=1                ;;
     h) usage                    ;;
     :) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
     \?) echo "Unknown option: -$OPTARG" >&2; exit 1 ;;
   esac
 done
+
+# When wizard mode is active, pre-filter events to the target interface
+[[ -n "$DIAG_IFACE" && -z "$IFACE_FILTER" ]] && IFACE_FILTER="$DIAG_IFACE"
 
 # ── Validate numerics ─────────────────────────────────────────────────────────
 if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || [[ "$WINDOW_MINUTES" -lt 1 ]]; then
@@ -61,10 +78,290 @@ fi
 if ! [[ "$FLAP_THRESHOLD" =~ ^[0-9]+$ ]] || [[ "$FLAP_THRESHOLD" -lt 2 ]]; then
   echo "Error: -t must be >= 2." >&2; exit 1
 fi
+if [[ -n "$PCAP_FILE" ]] && [[ ! -r "$PCAP_FILE" ]]; then
+  echo "Error: -p: cannot read file '$PCAP_FILE'." >&2; exit 1
+fi
+if [[ -n "$PROM_URL" ]] && ! command -v curl &>/dev/null; then
+  echo "Error: -m requires curl (not found)." >&2; exit 1
+fi
+
+# ── Backup & Rollback ─────────────────────────────────────────────────────────
+
+_BACKUP_SOURCES=(
+  /etc/netplan
+  /etc/network/interfaces
+  /etc/network/interfaces.d
+  /etc/NetworkManager/system-connections
+  /etc/sysctl.conf
+  /etc/sysctl.d
+)
+
+create_backup() {
+  local iface="$1"
+  local ts; ts=$(date "+%Y%m%d-%H%M%S")
+  local backup_id="${ts}-${iface}"
+  local dest="${BACKUP_DIR}/${backup_id}"
+  mkdir -p "$dest"
+  local manifest=()
+  for src in "${_BACKUP_SOURCES[@]}"; do
+    [[ -e "$src" ]] || continue
+    cp -a "$src" "$dest/" 2>/dev/null && manifest+=("$(basename "$src")")
+  done
+  printf '%s\n' "iface=$iface" "ts=$ts" "files=${manifest[*]}" > "${dest}/.manifest"
+  echo "$backup_id"
+}
+
+list_backups() {
+  if [[ ! -d "$BACKUP_DIR" ]]; then echo "  No backups found."; return; fi
+  local count=0
+  for d in "${BACKUP_DIR}"/*/; do
+    [[ -d "$d" ]] || continue
+    local id; id=$(basename "$d")
+    local iface=""; grep -q "^iface=" "${d}/.manifest" 2>/dev/null \
+      && iface=$(grep "^iface=" "${d}/.manifest" | cut -d= -f2)
+    printf "  %-30s  iface: %s\n" "$id" "$iface"
+    (( count++ )) || true
+  done
+  [[ $count -eq 0 ]] && echo "  No backups found." || true
+}
+
+do_rollback() {
+  local backup_id="$1"
+  if [[ "$backup_id" == "list" ]]; then
+    echo -e "\n${BOLD}Available backups:${RESET}"; list_backups; return
+  fi
+  local src="${BACKUP_DIR}/${backup_id}"
+  if [[ ! -d "$src" ]]; then
+    echo "Error: backup '$backup_id' not found in ${BACKUP_DIR}." >&2; exit 1
+  fi
+  echo -e "${BOLD}Rolling back to:${RESET} ${backup_id}"
+  declare -A dest_map=(
+    [netplan]=/etc/netplan
+    [interfaces]=/etc/network/interfaces
+    [interfaces.d]=/etc/network/interfaces.d
+    [system-connections]=/etc/NetworkManager/system-connections
+    [sysctl.conf]=/etc/sysctl.conf
+    [sysctl.d]=/etc/sysctl.d
+  )
+  local restored=0 failed=0
+  for item in "$src"/*/  "$src"/*; do
+    [[ -e "$item" ]] || continue
+    local name; name=$(basename "$item")
+    [[ -v "dest_map[$name]" ]] || continue
+    local dst="${dest_map[$name]}"
+    if cp -a "$item" "$(dirname "$dst")/" 2>/dev/null; then
+      echo "  Restored: $name → $dst"
+      (( restored++ )) || true
+    else
+      echo "  ${YELLOW}Warning: could not restore $name (permission denied)${RESET}" >&2
+      (( failed++ )) || true
+    fi
+  done
+  echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
+  if [[ $failed -gt 0 ]]; then
+    echo -e "  ${YELLOW}${failed} item(s) could not be restored — re-run with sudo:${RESET}" >&2
+    echo -e "  sudo ./link-flap-detect.sh -R ${backup_id}" >&2
+    exit 1
+  fi
+}
 
 # ── Temp file — cleaned up on exit ───────────────────────────────────────────
 TMPFILE=$(mktemp /tmp/link-flap-XXXXXX)
 trap 'rm -f "$TMPFILE"' EXIT
+
+if [[ -n "$ROLLBACK_ID" ]]; then do_rollback "$ROLLBACK_ID"; exit 0; fi
+
+# ── Diagnostic Wizard ─────────────────────────────────────────────────────────
+
+_wiz_read() {
+  local path="$1"
+  if [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+    cat "${_LINK_FLAP_TEST_WIZARD_DIR}/$(basename "$path")" 2>/dev/null || echo ""
+  else
+    cat "$path" 2>/dev/null || echo ""
+  fi
+}
+
+_wiz_cmd() {
+  local key="$1"; shift
+  if [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+    cat "${_LINK_FLAP_TEST_WIZARD_DIR}/${key}" 2>/dev/null || echo ""
+  else
+    "$@" 2>/dev/null || echo ""
+  fi
+}
+
+run_wizard() {
+  local iface="$1"
+  mkdir -p "$BACKUP_DIR" "$REPORT_DIR"
+
+  # 1. Create backup
+  local backup_id
+  backup_id=$(create_backup "$iface")
+
+  # 2. Validate interface (skipped in test mode)
+  if [[ -z "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+    if ! ip link show "$iface" &>/dev/null; then
+      echo "Error: interface '$iface' not found." >&2; exit 1
+    fi
+  fi
+
+  # 3. Collect diagnostic data
+  local operstate carrier_changes power_control
+  local ethtool_out ethtool_s_out ethtool_eee_out ip_link_out dmesg_raw dmesg_out
+
+  operstate=$(_wiz_read "/sys/class/net/${iface}/operstate")
+  carrier_changes=$(_wiz_read "/sys/class/net/${iface}/carrier_changes")
+  power_control=$(_wiz_cmd power_control cat "/sys/class/net/${iface}/device/power/control")
+  ethtool_out=$(_wiz_cmd ethtool ethtool "$iface")
+  ethtool_s_out=$(_wiz_cmd ethtool_s ethtool -S "$iface")
+  ethtool_eee_out=$(_wiz_cmd ethtool_eee ethtool --show-eee "$iface")
+  ip_link_out=$(_wiz_cmd ip_link ip link show "$iface")
+  dmesg_raw=$(_wiz_cmd dmesg dmesg)
+  dmesg_out=$(echo "$dmesg_raw" | grep -i "$iface" | tail -30 2>/dev/null || true)
+
+  local speed duplex autoneg
+  speed=$(echo "$ethtool_out" | grep -i "Speed:" | awk '{print $2}' | head -1 || true)
+  duplex=$(echo "$ethtool_out" | grep -i "Duplex:" | awk '{print $2}' | head -1 || true)
+  autoneg=$(echo "$ethtool_out" | grep -i "Auto-negotiation:" | awk '{print $2}' | head -1 || true)
+
+  # 4. Build findings array — each entry: "LEVEL<tab>Title<tab>Description<tab>Fix"
+  local -a findings=()
+
+  # High carrier changes (> 20 since boot)
+  if [[ -n "$carrier_changes" ]] && [[ "$carrier_changes" =~ ^[0-9]+$ ]] && \
+     [[ "$carrier_changes" -gt 20 ]]; then
+    findings+=("WARN"$'\t'"High carrier changes since boot"$'\t'"${carrier_changes} state changes since boot — suggests persistent instability"$'\t'"Check cable, SFP module, or switch port")
+  fi
+
+  # EEE enabled
+  if echo "$ethtool_eee_out" | grep -qi "EEE status: enabled"; then
+    findings+=("CAUSE"$'\t'"Energy-Efficient Ethernet (EEE) enabled"$'\t'"EEE allows the NIC to enter low-power states, causing link drops"$'\t'"ethtool --set-eee ${iface} eee off")
+  fi
+
+  # NIC power management (runtime PM)
+  if [[ "$power_control" == "auto" ]]; then
+    findings+=("CAUSE"$'\t'"NIC power management enabled (runtime PM)"$'\t'"Runtime PM (power/control=auto) can suspend the NIC and drop the link"$'\t'"echo 'on' > /sys/class/net/${iface}/device/power/control")
+  fi
+
+  # RX CRC errors
+  local rx_crc
+  rx_crc=$(echo "$ethtool_s_out" | grep -i "rx_crc_errors" | awk '{print $2}' | head -1 || true)
+  if [[ -n "$rx_crc" ]] && [[ "$rx_crc" =~ ^[0-9]+$ ]] && [[ "$rx_crc" -gt 0 ]]; then
+    findings+=("CAUSE"$'\t'"RX CRC errors detected"$'\t'"${rx_crc} CRC errors — indicates physical layer fault (cable/SFP/switch port)"$'\t'"Replace cable or SFP; check switch port error counters")
+  fi
+
+  # Half-duplex
+  if echo "$ethtool_out" | grep -qi "Duplex: Half"; then
+    findings+=("WARN"$'\t'"Half-duplex detected"$'\t'"Half-duplex causes collisions and link instability at high load"$'\t'"ethtool -s ${iface} speed 1000 duplex full autoneg off")
+  fi
+
+  # No physical link
+  if echo "$ethtool_out" | grep -qi "Link detected: no"; then
+    findings+=("CAUSE"$'\t'"No physical link detected"$'\t'"No carrier signal — check cable, SFP, switch port"$'\t'"Verify cable is seated; check switch port status")
+  fi
+
+  # dmesg: hardware error / fatal
+  if echo "$dmesg_out" | grep -qi "hardware error\|fatal"; then
+    findings+=("CAUSE"$'\t'"Hardware error in kernel log"$'\t'"Kernel reported hardware error for ${iface} — possible NIC failure"$'\t'"Check full dmesg: dmesg | grep -i ${iface}")
+  fi
+
+  # dmesg: reset / reinit
+  if echo "$dmesg_out" | grep -qi "reset\|reinit"; then
+    findings+=("WARN"$'\t'"NIC reset/reinit events in kernel log"$'\t'"Kernel log shows NIC resets for ${iface}"$'\t'"Check full dmesg: dmesg | grep -i ${iface}")
+  fi
+
+  # 5. Pattern analysis — use TMPFILE events for the interface
+  local -a iface_events=()
+  if [[ -f "$TMPFILE" ]]; then
+    mapfile -t iface_events < <(grep -F -- " ${iface} " "$TMPFILE" | sort -n 2>/dev/null || true)
+  fi
+  local event_count=${#iface_events[@]}
+  findings+=("INFO"$'\t'"Flap events in scan window"$'\t'"${event_count} link event(s) found in the last ${WINDOW_MINUTES}m window"$'\t'"Use -v to see individual events")
+
+  if [[ $event_count -ge 4 ]]; then
+    local -a epochs=()
+    local evt
+    for evt in "${iface_events[@]}"; do
+      epochs+=("$(echo "$evt" | awk '{print $1}')")
+    done
+    local i max_interval=0 min_interval=999999 spread=0
+    for (( i=1; i<${#epochs[@]}; i++ )); do
+      local interval=$(( epochs[i] - epochs[i-1] ))
+      [[ $interval -gt $max_interval ]] && max_interval=$interval
+      [[ $interval -lt $min_interval ]] && min_interval=$interval
+    done
+    spread=$(( max_interval - min_interval ))
+    if [[ $spread -lt 30 ]]; then
+      findings+=("WARN"$'\t'"Regular flap interval detected"$'\t'"Inter-event intervals are consistent (spread ${spread}s) — may indicate STP, LACP, or power-cycle timer"$'\t'"Check STP: bridge link; check LACP: teamdctl; check power management")
+    fi
+  fi
+
+  # 6. Print report (terminal + capture for file)
+  local -a report_lines=()
+  local ts_now; ts_now=$(date "+%Y-%m-%d %H:%M:%S")
+  local SEP="════════════════════════════════════════════════════════════"
+
+  _rpt() {
+    local _l="$1"
+    echo -e "$_l"
+    report_lines+=("$(echo -e "$_l" | sed 's/\x1b\[[0-9;]*m//g')")
+  }
+
+  _rpt ""
+  _rpt "${BOLD}${SEP}${RESET}"
+  _rpt "${BOLD}  Diagnostic Report — ${iface}${RESET}"
+  _rpt "  Generated : ${ts_now}"
+  _rpt "  Backup ID : ${backup_id}"
+  _rpt "${BOLD}${SEP}${RESET}"
+  _rpt ""
+  _rpt "${BOLD}Interface State${RESET}"
+  _rpt "  operstate      : ${operstate:-unknown}"
+  _rpt "  carrier_changes: ${carrier_changes:-unknown}"
+  _rpt "  speed          : ${speed:-unknown}"
+  _rpt "  duplex         : ${duplex:-unknown}"
+  _rpt "  autoneg        : ${autoneg:-unknown}"
+  _rpt "  power/control  : ${power_control:-unknown}"
+  _rpt ""
+  _rpt "${BOLD}Findings${RESET}"
+
+  local cause_count=0 warn_count=0
+  local finding
+  for finding in "${findings[@]}"; do
+    local f_level f_title f_desc f_fix
+    IFS=$'\t' read -r f_level f_title f_desc f_fix <<< "$finding"
+    case "$f_level" in
+      CAUSE)
+        _rpt "  ${RED}[CAUSE]${RESET} ${BOLD}${f_title}${RESET}"
+        _rpt "          ${f_desc}"
+        _rpt "    ${GREEN}[FIX]${RESET}  ${f_fix}"
+        (( cause_count++ )) || true
+        ;;
+      WARN)
+        _rpt "  ${YELLOW}[WARN]${RESET}  ${BOLD}${f_title}${RESET}"
+        _rpt "          ${f_desc}"
+        _rpt "    ${GREEN}[FIX]${RESET}  ${f_fix}"
+        (( warn_count++ )) || true
+        ;;
+      INFO)
+        _rpt "  ${CYAN}[INFO]${RESET}  ${f_title}: ${f_desc}"
+        ;;
+    esac
+  done
+
+  _rpt ""
+  _rpt "${BOLD}Summary${RESET}"
+  _rpt "  Causes  : ${cause_count}"
+  _rpt "  Warnings: ${warn_count}"
+  _rpt "  Report  : ${REPORT_DIR}/${backup_id}.txt"
+  _rpt "  Rollback: ./link-flap-detect.sh -R ${backup_id}"
+  _rpt ""
+
+  # 7. Save report (strip ANSI already done in _rpt)
+  printf '%s\n' "${report_lines[@]}" > "${REPORT_DIR}/${backup_id}.txt"
+
+  exit 0
+}
 
 # ── Step 1: Collect raw log lines ─────────────────────────────────────────────
 # Format we aim to emit into TMPFILE for each event:
@@ -89,6 +386,110 @@ collect_from_syslog() {
     local lines=$(( WINDOW_MINUTES * 200 ))   # ~200 log lines per minute — generous
     tail -n "$lines" "$logfile"
   fi
+}
+
+collect_from_tshark() {
+  local pcap="$1"
+  if ! command -v tshark &>/dev/null; then
+    echo "Error: tshark is not installed (required for -p)." >&2; exit 1
+  fi
+
+  # ── STP Topology Change Notifications ─────────────────────────────────────
+  # Each TCN BPDU signals a spanning-tree port state change. Consecutive TCNs
+  # from the same sender alternate DOWN/UP (first event = something went down,
+  # second = recovery, etc.). We name the synthetic iface "stp-<last2octets>".
+  tshark -r "$pcap" -q -Y "stp.flags.tc == 1" \
+    -T fields -e frame.time_epoch -e eth.src \
+    2>/dev/null \
+  | awk -v iface_filter="$IFACE_FILTER" '
+    NF < 2 { next }
+    {
+      epoch = int($1)
+      mac   = $2
+      n     = split(mac, m, ":")
+      iface = "stp-" m[n-1] m[n]
+      if (iface_filter != "" && iface != iface_filter) next
+      state = (last_state[iface] == "DOWN") ? "UP" : "DOWN"
+      last_state[iface] = state
+      print epoch " " iface " " state
+    }'
+
+  # ── LACP synchronisation state changes ────────────────────────────────────
+  # Bit 3 of actor_state is the Synchronisation flag (value 8). When it falls
+  # to 0 the bond member is no longer in sync → DOWN; when it rises → UP.
+  # Emit a record only when the state transitions, to avoid duplicates.
+  tshark -r "$pcap" -q -Y "lacp" \
+    -T fields -e frame.time_epoch -e eth.src -e lacp.actor_state \
+    2>/dev/null \
+  | awk -v iface_filter="$IFACE_FILTER" '
+    NF < 3 { next }
+    {
+      epoch = int($1)
+      mac   = $2
+      n     = split(mac, m, ":")
+      iface = "lacp-" m[n-1] m[n]
+      if (iface_filter != "" && iface != iface_filter) next
+      actor_state = int($3)
+      state = (int(actor_state / 8) % 2 == 1) ? "UP" : "DOWN"
+      if (state != last_state[iface]) {
+        print epoch " " iface " " state
+        last_state[iface] = state
+      }
+    }'
+}
+
+prom_query() {
+  # Query Prometheus instant API; return first result value or empty string.
+  # _LINK_FLAP_TEST_PROM: path to a canned JSON response file (test hook).
+  local query="$1"
+  local response
+  if [[ -n "${_LINK_FLAP_TEST_PROM:-}" ]]; then
+    response=$(cat "$_LINK_FLAP_TEST_PROM")
+  else
+    response=$(curl -sf -G "${PROM_URL}/api/v1/query" \
+      --data-urlencode "query=$query" \
+      --max-time 5 2>/dev/null) || return 0
+  fi
+  if command -v jq &>/dev/null; then
+    echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null
+  else
+    python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+r=d.get('data',{}).get('result',[])
+if r: print(r[0]['value'][1])
+" <<< "$response" 2>/dev/null
+  fi
+}
+
+show_prometheus_context() {
+  # Print a [Prometheus] enrichment block for the given interface.
+  # Skips silently if no Prometheus source is configured, the interface is
+  # a synthetic tshark name (stp-*/lacp-*), or no data is returned.
+  local iface="$1"
+  [[ -z "$PROM_URL" && -z "${_LINK_FLAP_TEST_PROM:-}" ]] && return
+  [[ "$iface" =~ ^(stp|lacp)- ]] && return
+
+  local up carrier rx_err tx_err rx_drop tx_drop
+  up=$(prom_query "node_network_up{device=\"$iface\"}")
+  carrier=$(prom_query "increase(node_network_carrier_changes_total{device=\"$iface\"}[${WINDOW_MINUTES}m])")
+  rx_err=$(prom_query "rate(node_network_receive_errs_total{device=\"$iface\"}[5m])*60")
+  tx_err=$(prom_query "rate(node_network_transmit_errs_total{device=\"$iface\"}[5m])*60")
+  rx_drop=$(prom_query "rate(node_network_receive_drop_total{device=\"$iface\"}[5m])*60")
+  tx_drop=$(prom_query "rate(node_network_transmit_drop_total{device=\"$iface\"}[5m])*60")
+
+  [[ -z "$up" && -z "$carrier" ]] && return
+
+  echo -e "  ${CYAN}[Prometheus]${RESET}"
+  if [[ -n "$up" ]]; then
+    local s; [[ "$up" == "1" ]] && s="${GREEN}UP${RESET}" || s="${RED}DOWN${RESET}"
+    echo -e "    Current state   : $s"
+  fi
+  [[ -n "$carrier" ]] && printf "    Carrier changes : %.0f in last %sm\n" "$carrier" "$WINDOW_MINUTES"
+  [[ -n "$rx_err"  ]] && printf "    RX errors       : %.2f/min\n" "$rx_err"
+  [[ -n "$tx_err"  ]] && printf "    TX errors       : %.2f/min\n" "$tx_err"
+  [[ -n "$rx_drop" ]] && printf "    RX drops        : %.2f/min\n" "$rx_drop"
+  [[ -n "$tx_drop" ]] && printf "    TX drops        : %.2f/min\n" "$tx_drop"
 }
 
 parse_events() {
@@ -221,6 +622,16 @@ if [[ -n "${_LINK_FLAP_TEST_INPUT:-}" ]]; then
   # Set by the test suite only — not a documented end-user option.
   LOG_SOURCE="test-input"
   collect_from_syslog "$_LINK_FLAP_TEST_INPUT" | parse_events >> "$TMPFILE"
+elif [[ -n "${_LINK_FLAP_TEST_TSHARK:-}" ]]; then
+  LOG_SOURCE="test-tshark"
+  if [[ -n "$IFACE_FILTER" ]]; then
+    awk -v f="$IFACE_FILTER" '$2 == f' "$_LINK_FLAP_TEST_TSHARK" >> "$TMPFILE"
+  else
+    cat "$_LINK_FLAP_TEST_TSHARK" >> "$TMPFILE"
+  fi
+elif [[ -n "$PCAP_FILE" ]]; then
+  LOG_SOURCE="tshark ($PCAP_FILE)"
+  collect_from_tshark "$PCAP_FILE" >> "$TMPFILE"
 elif command -v journalctl &>/dev/null; then
   collect_from_journald | parse_events >> "$TMPFILE"
 else
@@ -236,6 +647,8 @@ sort -u "$TMPFILE" -o "$TMPFILE"
 # ── Step 3: Analyse for flapping ─────────────────────────────────────────────
 # For each interface: count state transitions, report if >= FLAP_THRESHOLD
 
+if [[ -n "$DIAG_IFACE" ]]; then run_wizard "$DIAG_IFACE"; fi
+
 FLAPPING_FOUND=0
 
 # Get unique interfaces from TMPFILE
@@ -245,6 +658,7 @@ echo ""
 echo -e "${BOLD}Link Flap Detector${RESET} — source: ${LOG_SOURCE}"
 echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} transitions"
 [[ -n "$IFACE_FILTER" ]] && echo -e "Interface filter: ${CYAN}${IFACE_FILTER}${RESET}"
+[[ -n "$PROM_URL" ]] && echo -e "Prometheus: ${CYAN}${PROM_URL}${RESET}"
 echo ""
 
 if [[ ${#IFACES[@]} -eq 0 ]]; then
@@ -296,6 +710,7 @@ for iface in "${IFACES[@]}"; do
         echo -e "$el"
       done
     fi
+    show_prometheus_context "$iface"
     echo ""
   else
     if [[ "$VERBOSE" -eq 1 ]]; then
@@ -303,6 +718,7 @@ for iface in "${IFACES[@]}"; do
       for el in "${event_lines[@]}"; do
         echo -e "$el"
       done
+      show_prometheus_context "$iface"
       echo ""
     fi
   fi
