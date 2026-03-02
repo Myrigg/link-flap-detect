@@ -348,7 +348,7 @@ By default, virtual and container interfaces are silently ignored:
 
 Use `-i IFACE` to override and target a specific interface (including virtual ones).
 
-## Running tests
+## testing the script is working
 
 ```bash
 bash tests/run-tests.sh
