@@ -57,6 +57,7 @@ chmod +x link-flap-detect.sh
 | `-3 SERVER` | Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment | (none) |
 | `-d IFACE` | Run diagnostic wizard for IFACE | (none) |
 | `-R BACKUP_ID` | Restore config files from a saved backup | (none) |
+| `-f SECONDS` | Follow mode: re-run every N seconds until Ctrl-C | (off) |
 | `-v` | Verbose — show every individual up/down event | off |
 | `-h` | Show help | |
 
@@ -117,6 +118,16 @@ ip link show
 
 # Then run the wizard:
 ./link-flap-detect.sh -d eth0 -w 60
+```
+
+**Watch for flapping in real time (re-scan every 30 seconds):**
+```bash
+./link-flap-detect.sh -f 30
+```
+
+**Follow mode with interface filter (Ctrl-C to stop):**
+```bash
+./link-flap-detect.sh -f 10 -i eth0 -v
 ```
 
 **List all saved config backups:**
@@ -298,6 +309,8 @@ The wizard:
 6. **Saves a text report** to `~/.local/share/link-flap/reports/`
 
 Override save locations via environment variables: `BACKUP_DIR`, `REPORT_DIR`.
+
+After applying a `[FIX]` command, re-run `./link-flap-detect.sh -i IFACE -w 10` to confirm the interface has stabilised.
 
 ## Backup & Rollback (`-R BACKUP_ID`)
 

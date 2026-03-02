@@ -192,10 +192,12 @@ $(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
 $(ts 100) host kernel: eth0: NIC Link is Down
 EOF
 run "$t" -w 60 -t 3
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
-  pass "4 transitions ≥ threshold 3: exit 1, [FLAPPING] reported"
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && echo "$OUT" | grep -q "1 interface(s) flapping"; then
+  pass "4 transitions ≥ threshold 3: exit 1, [FLAPPING] + summary count reported"
 else
-  fail "4 transitions ≥ threshold 3: exit 1, [FLAPPING] reported" "exit=$EXITCODE\n$OUT"
+  fail "4 transitions ≥ threshold 3: exit 1, [FLAPPING] + summary count reported" "exit=$EXITCODE\n$OUT"
 fi
 
 # 4. Interface filter -i eth1 excludes eth0 events entirely → exit 0
@@ -258,8 +260,9 @@ EOF
 run "$t" -w 60 -t 3
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\].*eth0" \
-   && ! echo "$OUT" | grep -q "\[FLAPPING\].*eth1"; then
-  pass "multiple ifaces: only flapping eth0 reported; stable eth1 silent"
+   && ! echo "$OUT" | grep -q "\[FLAPPING\].*eth1" \
+   && echo "$OUT" | grep -q "1 interface(s) flapping"; then
+  pass "multiple ifaces: only flapping eth0 reported; stable eth1 silent; summary count=1"
 else
   fail "multiple ifaces: only flapping eth0 reported; stable eth1 silent" "exit=$EXITCODE\n$OUT"
 fi
@@ -358,6 +361,35 @@ if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -qi "usage\|options\|-w"; then
   pass "-h prints usage text and exits 0"
 else
   fail "-h prints usage text and exits 0" "exit=$EXITCODE\n$OUT"
+fi
+
+# 51. -f 0 is rejected (must be >= 1) → exit 1 + error
+t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
+run "$t" -f 0
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "51: invalid -f 0 → exit 1 + error message"
+else
+  fail "51: invalid -f 0 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+fi
+
+# 52. -f abc is rejected (non-numeric) → exit 1 + error
+t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
+run "$t" -f abc
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "52: invalid -f abc → exit 1 + error message"
+else
+  fail "52: invalid -f abc → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+fi
+
+# 53. Empty log + -f 1 → "next scan" message appears; follow header shown
+#     Use timeout(1) to break the infinite exec loop after 3s; exit 124 expected.
+t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
+OUT=''; EXITCODE=0
+OUT=$(timeout 3 bash -c "_LINK_FLAP_TEST_INPUT='$t' bash '$SCRIPT' -f 1 -w 60 2>&1") || EXITCODE=$?
+if echo "$OUT" | grep -q "next scan in 1s" && echo "$OUT" | grep -q "Follow:"; then
+  pass "53: follow mode (-f 1): header and 'next scan' message appear"
+else
+  fail "53: follow mode (-f 1): header and 'next scan' message appear" "exit=$EXITCODE\n$OUT"
 fi
 
 # 15. Syslog-format timestamps ("Mon DD HH:MM:SS") are parsed correctly
@@ -981,6 +1013,78 @@ if [[ $EXITCODE -eq 1 ]] \
   pass "50: iperf3: synthetic stp-* iface → [iperf3] block skipped"
 else
   fail "50: iperf3: synthetic stp-* iface → [iperf3] block skipped" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── Offline tests (54–56): cross-interface correlation ───────────────────────
+
+# 54. eth0 + eth1 both flapping with overlapping epochs → [CORRELATED] in output
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+# Use fixed epochs so eth0 and eth1 events fall in the same 10-second bucket
+BASE=$(( $(date +%s) - 300 ))
+cat > "$t" <<EOF
+$(date -d "@$(( BASE ))"     "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down
+$(date -d "@$(( BASE + 2 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Down
+$(date -d "@$(( BASE + 4 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(date -d "@$(( BASE + 6 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Up 1000 Mbps Full Duplex
+$(date -d "@$(( BASE + 8 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down
+$(date -d "@$(( BASE + 10))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Down
+$(date -d "@$(( BASE + 12))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(date -d "@$(( BASE + 14))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Up 1000 Mbps Full Duplex
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[CORRELATED\]"; then
+  pass "54: two ifaces flapping simultaneously → [CORRELATED] shown"
+else
+  fail "54: two ifaces flapping simultaneously → [CORRELATED] shown" "exit=$EXITCODE\n$OUT"
+fi
+
+# 55. eth0 + eth1 both flapping but events 90s apart → no [CORRELATED]
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+BASE=$(( $(date +%s) - 600 ))
+cat > "$t" <<EOF
+$(date -d "@$(( BASE ))"     "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down
+$(date -d "@$(( BASE + 2 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(date -d "@$(( BASE + 4 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down
+$(date -d "@$(( BASE + 6 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(date -d "@$(( BASE + 90))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Down
+$(date -d "@$(( BASE + 92))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Up 1000 Mbps Full Duplex
+$(date -d "@$(( BASE + 94))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Down
+$(date -d "@$(( BASE + 96))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth1: NIC Link is Up 1000 Mbps Full Duplex
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] \
+   && ! echo "$OUT" | grep -q "\[CORRELATED\]"; then
+  pass "55: two ifaces flapping but 90s apart → no [CORRELATED]"
+else
+  fail "55: two ifaces flapping but 90s apart → no [CORRELATED]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 56. Only one interface flapping → no [CORRELATED] (guard: FLAPPING_COUNT < 2)
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] \
+   && ! echo "$OUT" | grep -q "\[CORRELATED\]"; then
+  pass "56: single interface flapping → no [CORRELATED]"
+else
+  fail "56: single interface flapping → no [CORRELATED]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 57. Wizard summary includes "Verify" re-run hint
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-verify-XXXXXX")
+echo "up" > "$wiz_dir/operstate"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "Verify"; then
+  pass "57: wizard summary includes 'Verify' re-run hint"
+else
+  fail "57: wizard summary includes 'Verify' re-run hint" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

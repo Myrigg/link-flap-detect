@@ -19,6 +19,7 @@
 #   -3 SERVER     Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment
 #   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
 #   -R BACKUP_ID  Restore config files from a saved backup (use 'list' to show all backups)
+#   -f SECONDS    Follow mode: re-run every N seconds (Ctrl-C to stop)
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #
@@ -35,6 +36,7 @@ PCAP_FILE=${PCAP_FILE:-""}
 PROM_URL=${PROM_URL:-""}
 NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-http://localhost:9100}"
 IPERF3_SERVER="${IPERF3_SERVER:-}"
+FOLLOW_SECONDS="${FOLLOW_SECONDS:-}"
 DIAG_IFACE=${DIAG_IFACE:-""}
 ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
@@ -56,7 +58,8 @@ usage() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-while getopts ":w:t:i:p:m:e:3:d:R:vh" opt; do
+_ORIG_ARGS=("$@")
+while getopts ":w:t:i:p:m:e:3:d:R:f:vh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
@@ -67,6 +70,7 @@ while getopts ":w:t:i:p:m:e:3:d:R:vh" opt; do
     3) IPERF3_SERVER="$OPTARG"  ;;
     d) DIAG_IFACE="$OPTARG"     ;;
     R) ROLLBACK_ID="$OPTARG"    ;;
+    f) FOLLOW_SECONDS="$OPTARG" ;;
     v) VERBOSE=1                ;;
     h) usage                    ;;
     :) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
@@ -93,6 +97,10 @@ fi
 if [[ -n "$IPERF3_SERVER" ]] && [[ -z "${_LINK_FLAP_TEST_IPERF3:-}" ]] && \
    ! command -v iperf3 &>/dev/null; then
   echo "Error: -3 requires iperf3 (not found). Install with: apt install iperf3" >&2; exit 1
+fi
+if [[ -n "$FOLLOW_SECONDS" ]] && \
+   ( ! [[ "$FOLLOW_SECONDS" =~ ^[0-9]+$ ]] || [[ "$FOLLOW_SECONDS" -lt 1 ]] ); then
+  echo "Error: -f must be a positive integer (seconds)." >&2; exit 1
 fi
 
 # ── Backup & Rollback ─────────────────────────────────────────────────────────
@@ -422,6 +430,7 @@ run_wizard() {
   _rpt "  Warnings: ${warn_count}"
   _rpt "  Report  : ${REPORT_DIR}/${backup_id}.txt"
   _rpt "  Rollback: ./link-flap-detect.sh -R ${backup_id}"
+  _rpt "  Verify  : ./link-flap-detect.sh -i ${iface} -w 10  (after applying fix)"
   _rpt ""
 
   # 7. Save report (strip ANSI already done in _rpt)
@@ -570,7 +579,7 @@ fetch_node_exporter() {
   if [[ -n "${_LINK_FLAP_TEST_NODE_EXPORTER:-}" ]]; then
     _NE_METRICS_CACHE=$(cat "$_LINK_FLAP_TEST_NODE_EXPORTER" 2>/dev/null || true)
   else
-    _NE_METRICS_CACHE=$(curl -sf --max-time 3 "${NODE_EXPORTER_URL}/metrics" 2>/dev/null || true)
+    _NE_METRICS_CACHE=$(curl -sf --max-time 1 "${NODE_EXPORTER_URL}/metrics" 2>/dev/null || true)
   fi
   [[ -n "$_NE_METRICS_CACHE" ]]
 }
@@ -830,6 +839,7 @@ run_iperf3 || true
 if [[ -n "$DIAG_IFACE" ]]; then run_wizard "$DIAG_IFACE"; fi
 
 FLAPPING_FOUND=0
+FLAPPING_COUNT=0
 
 # Get unique interfaces from TMPFILE
 mapfile -t IFACES < <(awk '{print $2}' "$TMPFILE" | sort -u)
@@ -841,11 +851,17 @@ echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} t
 [[ -n "$PROM_URL" ]] && echo -e "Prometheus: ${CYAN}${PROM_URL}${RESET}"
 [[ -n "$_NE_METRICS_CACHE" ]] && echo -e "node_exporter: ${CYAN}${NODE_EXPORTER_URL}${RESET}"
 [[ -n "$_IPERF3_RESULT_CACHE" ]] && echo -e "iperf3: ${CYAN}${IPERF3_SERVER}${RESET}"
+[[ -n "$FOLLOW_SECONDS" ]] && echo -e "Follow: every ${CYAN}${FOLLOW_SECONDS}s${RESET}  (Ctrl-C to stop)"
 echo ""
 
 if [[ ${#IFACES[@]} -eq 0 ]]; then
   echo -e "${GREEN}No link state events found in the log window.${RESET}"
   echo ""
+  if [[ -n "$FOLLOW_SECONDS" ]]; then
+    echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
+    sleep "$FOLLOW_SECONDS"
+    exec "$0" "${_ORIG_ARGS[@]}"
+  fi
   exit 0
 fi
 
@@ -885,6 +901,7 @@ for iface in "${IFACES[@]}"; do
 
   if [[ "$transitions" -ge "$FLAP_THRESHOLD" ]]; then
     FLAPPING_FOUND=1
+    (( FLAPPING_COUNT++ )) || true
     echo -e "${RED}${BOLD}[FLAPPING]${RESET} ${BOLD}${iface}${RESET}"
     echo -e "  Transitions : ${RED}${transitions}${RESET}  |  Events: ${count}  |  Span: ${first_ts}–${last_ts} (${span_str})"
     if [[ "$VERBOSE" -eq 1 ]]; then
@@ -910,9 +927,46 @@ for iface in "${IFACES[@]}"; do
   fi
 done
 
+# ── Cross-interface correlation ────────────────────────────────────────────────
+# If 2+ interfaces are flapping, check whether any of their events fell in the
+# same 10-second bucket — a strong hint of a common upstream cause.
+if [[ "$FLAPPING_COUNT" -ge 2 ]]; then
+  _corr=$(awk '
+  {
+    bucket = int($1 / 10) * 10
+    key    = bucket SUBSEP $2
+    seen[key]    = 1
+    buckets[bucket] = 1
+  }
+  END {
+    for (b in buckets) {
+      n = 0
+      for (k in seen) {
+        split(k, parts, SUBSEP)
+        if (parts[1] == b) n++
+      }
+      if (n >= 2) { print "yes"; exit }
+    }
+  }
+  ' "$TMPFILE")
+  if [[ "$_corr" == "yes" ]]; then
+    echo -e "  ${YELLOW}[CORRELATED]${RESET} Multiple interfaces had events in the same 10-second window."
+    echo -e "  ${DIM}Possible shared cause: switch reboot, upstream link failure, power event, or broadcast storm.${RESET}"
+    echo ""
+  fi
+fi
+
 if [[ "$FLAPPING_FOUND" -eq 0 ]]; then
   echo -e "${GREEN}No flapping detected${RESET} in the last ${WINDOW_MINUTES} minutes (threshold: ${FLAP_THRESHOLD} transitions)."
   echo ""
+else
+  echo -e "${BOLD}Summary:${RESET} ${RED}${FLAPPING_COUNT} interface(s) flapping${RESET} in the last ${WINDOW_MINUTES} minutes."
+  echo ""
 fi
 
+if [[ -n "$FOLLOW_SECONDS" ]]; then
+  echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
+  sleep "$FOLLOW_SECONDS"
+  exec "$0" "${_ORIG_ARGS[@]}"
+fi
 exit $(( FLAPPING_FOUND ))
