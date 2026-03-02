@@ -386,7 +386,8 @@ fi
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 OUT=''; EXITCODE=0
 OUT=$(timeout 3 bash -c "_LINK_FLAP_TEST_INPUT='$t' bash '$SCRIPT' -f 1 -w 60 2>&1") || EXITCODE=$?
-if echo "$OUT" | grep -q "next scan in 1s" && echo "$OUT" | grep -q "Follow:"; then
+if echo "$OUT" | grep -q "next scan in 1s" && echo "$OUT" | grep -q "Follow:" \
+   && [[ $EXITCODE -eq 124 || $EXITCODE -le 1 ]]; then
   pass "53: follow mode (-f 1): header and 'next scan' message appear"
 else
   fail "53: follow mode (-f 1): header and 'next scan' message appear" "exit=$EXITCODE\n$OUT"
@@ -1135,7 +1136,7 @@ ${FUT_BASE} ${FUT_H}:00:04 host kernel: eth0: NIC Link is Down
 ${FUT_BASE} ${FUT_H}:00:06 host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
 ${FUT_BASE} ${FUT_H}:00:08 host kernel: eth0: NIC Link is Down
 EOF
-run "$t" -w 500000 -t 3
+run "$t" -w 43200 -t 3
 if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
   pass "60: cross-year syslog timestamps corrected — flapping detected despite future-year parse"
 else
@@ -1177,6 +1178,39 @@ if [[ $EXITCODE -eq 1 ]] \
   pass "62: Prometheus unreachable → dim 'returned no data' note in output"
 else
   fail "62: Prometheus unreachable → dim 'returned no data' note in output" "exit=$EXITCODE\n$OUT"
+fi
+
+# 63. -w 999999 (exceeds 43200 max) → exit 1 + error
+OUT=''; EXITCODE=0
+run /dev/null -w 999999
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "63: -w 999999 → exit 1 + error (exceeds max 43200)"
+else
+  fail "63: -w 999999 → exit 1 + error (exceeds max 43200)" "exit=$EXITCODE\n$OUT"
+fi
+
+# 64. -p /nonexistent → exit 1 + "cannot read" error
+OUT=''; EXITCODE=0
+run /dev/null -p /tmp/this-file-does-not-exist-link-flap-test.pcap
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "cannot read"; then
+  pass "64: -p /nonexistent → exit 1 + cannot read error"
+else
+  fail "64: -p /nonexistent → exit 1 + cannot read error" "exit=$EXITCODE\n$OUT"
+fi
+
+# 65. -i zzzz_no_iface with a valid log → interface filter matches nothing → exit 0
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+2024-11-01T14:23:05+0000 host kernel: eth0: NIC Link is Up 1000 Mbps
+2024-11-01T14:24:00+0000 host kernel: eth0: NIC Link is Down
+2024-11-01T14:24:30+0000 host kernel: eth0: NIC Link is Up 1000 Mbps
+EOF
+OUT=''; EXITCODE=0
+run "$t" -i zzzz_no_iface -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -qE "No link state events found|No flapping detected"; then
+  pass "65: -i nonexistent_iface → exit 0 + no-events message"
+else
+  fail "65: -i nonexistent_iface → exit 0 + no-events message" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
