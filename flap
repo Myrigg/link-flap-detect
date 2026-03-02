@@ -82,8 +82,9 @@ done
 [[ -n "$DIAG_IFACE" && -z "$IFACE_FILTER" ]] && IFACE_FILTER="$DIAG_IFACE"
 
 # ── Validate numerics ─────────────────────────────────────────────────────────
-if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || [[ "$WINDOW_MINUTES" -lt 1 ]]; then
-  echo "Error: -w must be a positive integer (minutes)." >&2; exit 1
+if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || \
+   [[ "$WINDOW_MINUTES" -lt 1 ]] || [[ "$WINDOW_MINUTES" -gt 43200 ]]; then
+  echo "Error: -w must be between 1 and 43200 (minutes)." >&2; exit 1
 fi
 if ! [[ "$FLAP_THRESHOLD" =~ ^[0-9]+$ ]] || [[ "$FLAP_THRESHOLD" -lt 2 ]]; then
   echo "Error: -t must be >= 2." >&2; exit 1
@@ -122,7 +123,7 @@ _BACKUP_SOURCES=(
 create_backup() {
   local iface="$1"
   local ts; ts=$(date "+%Y%m%d-%H%M%S")
-  local backup_id="${ts}-${iface}"
+  local backup_id="${ts}-${iface:0:50}"
   local dest="${BACKUP_DIR}/${backup_id}"
   mkdir -p "$dest"
   local manifest=()
@@ -143,8 +144,7 @@ list_backups() {
   for d in "${BACKUP_DIR}"/*/; do
     [[ -d "$d" ]] || continue
     local id; id=$(basename "$d")
-    local iface=""; grep -q "^iface=" "${d}/.manifest" 2>/dev/null \
-      && iface=$(grep "^iface=" "${d}/.manifest" | cut -d= -f2)
+    local iface; iface=$(grep "^iface=" "${d}/.manifest" 2>/dev/null | cut -d= -f2 || true)
     printf "  %-30s  iface: %s\n" "$id" "$iface"
     (( count++ )) || true
   done
@@ -796,7 +796,9 @@ parse_events() {
     state = $3
 
     if (!(ts in epoch_cache)) {
-      cmd = "date -d \047" ts "\047 +%s 2>/dev/null || echo 0"
+      ts_safe = ts
+      gsub(/[^A-Za-z0-9 :+TZ-]/, "", ts_safe)
+      cmd = "date -d \047" ts_safe "\047 +%s 2>/dev/null || echo 0"
       cmd | getline result
       close(cmd)
       # Guard against syslog timestamps without a year (e.g. "Dec 31 14:00:00").
@@ -892,8 +894,7 @@ for iface in "${IFACES[@]}"; do
   declare -a event_lines=()
 
   for evt in "${EVENTS[@]}"; do
-    epoch=$(echo "$evt" | awk '{print $1}')
-    state=$(echo "$evt" | awk '{print $3}')
+    IFS=' ' read -r epoch _evt_iface state <<< "$evt"
     ts_human=$(date -d "@$epoch" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "unknown")
 
     _sc="$RED"; [[ "$state" == "UP" ]] && _sc="$GREEN"
@@ -958,17 +959,10 @@ if [[ "$FLAPPING_COUNT" -ge 2 ]]; then
   {
     bucket = int($1 / 10) * 10
     key    = bucket SUBSEP $2
-    seen[key]    = 1
-    buckets[bucket] = 1
-  }
-  END {
-    for (b in buckets) {
-      n = 0
-      for (k in seen) {
-        split(k, parts, SUBSEP)
-        if (parts[1] == b) n++
-      }
-      if (n >= 2) { print "yes"; exit }
+    if (!(key in seen)) {
+      seen[key] = 1
+      count[bucket]++
+      if (count[bucket] >= 2) { print "yes"; exit }
     }
   }
   ' "$TMPFILE")
