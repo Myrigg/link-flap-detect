@@ -100,6 +100,16 @@ tshark -w /tmp/capture.pcap -a duration:60 -i eth0
 ./link-flap-detect.sh -p /tmp/capture.pcap -i stp-aabb
 ```
 
+**Check bandwidth while a link is flapping (iperf3 enrichment):**
+```bash
+./link-flap-detect.sh -3 iperf3.example.com
+```
+
+**Wizard + iperf3 probe together:**
+```bash
+./link-flap-detect.sh -d eth0 -3 iperf3.example.com
+```
+
 **Run the diagnostic wizard on eth0:**
 ```bash
 # Find your interface name first:

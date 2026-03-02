@@ -936,10 +936,12 @@ EOF
 run_with_iperf3 "$t" "$IPERF3_CLEAN" -w 60 -t 3
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\]" \
-   && echo "$OUT" | grep -q "\[iperf3\]"; then
-  pass "47: iperf3 enrichment: flapping eth0 shows [iperf3] block"
+   && echo "$OUT" | grep -q "\[iperf3\]" \
+   && echo "$OUT" | grep -q "943" \
+   && echo "$OUT" | grep -q "Retransmits.*: 0"; then
+  pass "47: iperf3 enrichment: flapping eth0 shows [iperf3] block, bandwidth 943, retransmits 0"
 else
-  fail "47: iperf3 enrichment: flapping eth0 shows [iperf3] block" "exit=$EXITCODE\n$OUT"
+  fail "47: iperf3 enrichment: flapping eth0 shows [iperf3] block, bandwidth 943, retransmits 0" "exit=$EXITCODE\n$OUT"
 fi
 
 # 48. Wizard + retransmits=12, bps=450M → [WARN] + "retransmit" in output
@@ -961,6 +963,25 @@ fi
 
 # 49. Live iperf3 probe — always SKIP (no server available in automated suite)
 skip "49: live iperf3 probe (no server available in automated suite)"
+
+# 50. stp-aabb flapping + iperf3 data → [FLAPPING] present, [iperf3] block skipped (synthetic iface)
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+1709386820 stp-aabb DOWN
+1709386880 stp-aabb UP
+EOF
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_TSHARK="$t" _LINK_FLAP_TEST_IPERF3="$IPERF3_CLEAN" \
+      bash "$SCRIPT" -3 test-server.example.com -w 60 -t 3 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && ! echo "$OUT" | grep -q "\[iperf3\]"; then
+  pass "50: iperf3: synthetic stp-* iface → [iperf3] block skipped"
+else
+  fail "50: iperf3: synthetic stp-* iface → [iperf3] block skipped" "exit=$EXITCODE\n$OUT"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))

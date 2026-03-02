@@ -634,12 +634,12 @@ import json, sys
 try:
     d = json.loads(sys.stdin.read())
     v = d
-    for p in '$field'.split('.'):
+    for p in sys.argv[1].split('.'):
         v = v[p]
     print(v)
 except Exception:
     pass
-" <<< "$_IPERF3_RESULT_CACHE" 2>/dev/null || true
+" "$field" <<< "$_IPERF3_RESULT_CACHE" 2>/dev/null || true
 }
 
 show_iperf3_context() {
