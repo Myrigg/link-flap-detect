@@ -41,6 +41,10 @@ fail() {
 # ts N — ISO 8601 timestamp N seconds ago (always within any reasonable window)
 ts() { date -d "@$(( $(date +%s) - $1 ))" "+%Y-%m-%dT%H:%M:%S+0000"; }
 
+# ts_syslog N — syslog-style "Mon DD HH:MM:SS" timestamp N seconds ago
+# Tests that the second awk pass correctly uses -F'\t' to parse spaced timestamps
+ts_syslog() { date -d "@$(( $(date +%s) - $1 ))" "+%b %e %H:%M:%S"; }
+
 # run INPUT_FILE [SCRIPT_ARGS...]
 # Populates OUT (stdout+stderr) and EXITCODE.
 OUT=''; EXITCODE=0
@@ -254,6 +258,143 @@ if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -qi "usage\|options\|-w"; then
   pass "-h prints usage text and exits 0"
 else
   fail "-h prints usage text and exits 0" "exit=$EXITCODE\n$OUT"
+fi
+
+# 15. Syslog-format timestamps ("Mon DD HH:MM:SS") are parsed correctly
+#     Verifies fix: second awk pass uses -F'\t' so spaced ts_raw is not split on spaces
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts_syslog 500) host kernel: eth0: NIC Link is Down
+$(ts_syslog 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts_syslog 300) host kernel: eth0: NIC Link is Down
+$(ts_syslog 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts_syslog 100) host kernel: eth0: NIC Link is Down
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "syslog-format timestamps (Mon DD HH:MM:SS) parsed correctly → flap detected"
+else
+  fail "syslog-format timestamps (Mon DD HH:MM:SS) parsed correctly → flap detected" "exit=$EXITCODE\n$OUT"
+fi
+
+# 16. All events same state → 0 transitions → no flapping
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Down
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Down
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "all events same state: 0 transitions → no flapping"
+else
+  fail "all events same state: 0 transitions → no flapping" "exit=$EXITCODE\n$OUT"
+fi
+
+# 17. Exactly at threshold (transitions == FLAP_THRESHOLD) → detected
+#     Down→Up→Down→Up = 3 transitions; threshold = 3 → should trigger
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 400) host kernel: eth0: NIC Link is Down
+$(ts 300) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 200) host kernel: eth0: NIC Link is Down
+$(ts 100) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "exactly at threshold (3 transitions, -t 3): detected"
+else
+  fail "exactly at threshold (3 transitions, -t 3): detected" "exit=$EXITCODE\n$OUT"
+fi
+
+# 18. br-* bridge interfaces are silently filtered by default
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: br-abc123: NIC Link is Down
+$(ts 400) host kernel: br-abc123: NIC Link is Up
+$(ts 300) host kernel: br-abc123: NIC Link is Down
+$(ts 200) host kernel: br-abc123: NIC Link is Up
+$(ts 100) host kernel: br-abc123: NIC Link is Down
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "br-* bridge interface filtered by default"
+else
+  fail "br-* bridge interface filtered by default" "exit=$EXITCODE\n$OUT"
+fi
+
+# 19. tun0 and tap0 interfaces are silently filtered by default
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: tun0: NIC Link is Down
+$(ts 450) host kernel: tun0: NIC Link is Up
+$(ts 400) host kernel: tun0: NIC Link is Down
+$(ts 350) host kernel: tun0: NIC Link is Up
+$(ts 300) host kernel: tun0: NIC Link is Down
+$(ts 200) host kernel: tap0: NIC Link is Down
+$(ts 150) host kernel: tap0: NIC Link is Up
+$(ts 100) host kernel: tap0: NIC Link is Down
+$(ts  50) host kernel: tap0: NIC Link is Up
+$(ts  10) host kernel: tap0: NIC Link is Down
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "tun0 and tap0 interfaces filtered by default"
+else
+  fail "tun0 and tap0 interfaces filtered by default" "exit=$EXITCODE\n$OUT"
+fi
+
+# 20. NM state change: alternating activated/deactivating → flap detected
+#     Verifies the "-> word" last-arrow extraction and UP/DOWN mapping
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host NetworkManager[1]: <info> device (eth0): state change: disconnected -> activated
+$(ts 400) host NetworkManager[1]: <info> device (eth0): state change: activated -> deactivating
+$(ts 300) host NetworkManager[1]: <info> device (eth0): state change: deactivating -> disconnected -> config -> activated
+$(ts 200) host NetworkManager[1]: <info> device (eth0): state change: activated -> deactivating
+$(ts 100) host NetworkManager[1]: <info> device (eth0): state change: deactivating -> disconnected
+EOF
+run "$t" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "NM state change: alternating activated/deactivating → flap detected"
+else
+  fail "NM state change: alternating activated/deactivating → flap detected" "exit=$EXITCODE\n$OUT"
+fi
+
+# 21. Malformed NM state change lines (no '->' arrow) produce no events
+#     Verifies fix: arrow="" initialized each record, no state inherited from prior record
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 200) host NetworkManager[1]: <info> device (eth0): state change: preparing
+$(ts 100) host NetworkManager[1]: <info> device (eth1): state change: configuring
+EOF
+run "$t" -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "No link state events found"; then
+  pass "NM state change: lines with no '->' arrow produce no events"
+else
+  fail "NM state change: lines with no '->' arrow produce no events" "exit=$EXITCODE\n$OUT"
+fi
+
+# 22. NM state change: arrow pollution — valid record followed by malformed for same iface
+#     Before the arrow="" fix, the malformed record would inherit the previous arrow value.
+#     After the fix: malformed produces no event, so eth0 has 1 event → count<2 → skipped.
+#     In both cases FLAPPING_FOUND=0, but only after the fix does the malformed line
+#     NOT contribute a spurious event. We verify via total transition count in verbose mode.
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 200) host NetworkManager[1]: <info> device (eth0): state change: disconnected -> activated
+$(ts 100) host NetworkManager[1]: <info> device (eth0): state change: preparing
+EOF
+run "$t" -w 60 -v
+# After fix: 1 real UP event, malformed produces nothing → count=1 → skipped
+# → "No link state events found" or "No flapping detected" (both fine: exit 0)
+# → verbose output does NOT show "2" events or a spurious duplicate
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -qE "Events: [2-9]"; then
+  pass "NM state change: malformed line after valid does not produce spurious event"
+else
+  fail "NM state change: malformed line after valid does not produce spurious event" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

@@ -171,6 +171,7 @@ parse_events() {
         iface = substr(lower, RSTART+1, RLENGTH-2)
       }
       # Extract last "-> word"
+      arrow = ""
       tmp = lower
       while (match(tmp, /-> [a-z]+/)) {
         arrow = substr(tmp, RSTART, RLENGTH)
@@ -194,7 +195,7 @@ parse_events() {
   }
   ' | \
   # Second pass: convert ts_raw → epoch using date(1) once per unique timestamp
-  awk '
+  awk -F'\t' '
   {
     ts  = $1
     iface = $2
@@ -254,7 +255,7 @@ fi
 
 for iface in "${IFACES[@]}"; do
   # Extract events for this interface, sorted by time
-  mapfile -t EVENTS < <(grep " $iface " "$TMPFILE" | sort -n)
+  mapfile -t EVENTS < <(grep -F -- " $iface " "$TMPFILE" | sort -n)
 
   count=${#EVENTS[@]}
   [[ "$count" -lt 2 ]] && continue   # Need at least 2 events to detect flapping
