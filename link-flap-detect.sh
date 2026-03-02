@@ -15,6 +15,7 @@
 #   -i IFACE      Limit output to a specific interface (e.g. eth0, ens18)
 #   -p PCAP_FILE  Analyse a packet capture file with tshark (requires tshark)
 #   -m URL        Prometheus base URL for metric enrichment (e.g. http://localhost:9090)
+#   -e URL        node_exporter metrics URL (default: http://localhost:9100; 'off' to disable)
 #   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
 #   -R BACKUP_ID  Restore config files from a saved backup (use 'list' to show all backups)
 #   -v            Verbose — show every individual up/down event
@@ -31,6 +32,7 @@ FLAP_THRESHOLD=${FLAP_THRESHOLD:-3}
 IFACE_FILTER=${IFACE_FILTER:-""}
 PCAP_FILE=${PCAP_FILE:-""}
 PROM_URL=${PROM_URL:-""}
+NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-http://localhost:9100}"
 DIAG_IFACE=${DIAG_IFACE:-""}
 ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
@@ -52,13 +54,14 @@ usage() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-while getopts ":w:t:i:p:m:d:R:vh" opt; do
+while getopts ":w:t:i:p:m:e:d:R:vh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
     i) IFACE_FILTER="$OPTARG"   ;;
     p) PCAP_FILE="$OPTARG"      ;;
     m) PROM_URL="$OPTARG"       ;;
+    e) NODE_EXPORTER_URL="$OPTARG" ;;
     d) DIAG_IFACE="$OPTARG"     ;;
     R) ROLLBACK_ID="$OPTARG"    ;;
     v) VERBOSE=1                ;;
@@ -220,6 +223,14 @@ run_wizard() {
   dmesg_raw=$(_wiz_cmd dmesg dmesg)
   dmesg_out=$(echo "$dmesg_raw" | grep -i "$iface" | tail -30 2>/dev/null || true)
 
+  # node_exporter metrics — uses _NE_METRICS_CACHE (fetch_node_exporter called at Step 3 entry)
+  local ne_up ne_rx_err ne_tx_err ne_rx_drop ne_tx_drop
+  ne_up=$(_ne_val node_network_up "$iface")
+  ne_rx_err=$(_ne_val node_network_receive_errs_total "$iface")
+  ne_tx_err=$(_ne_val node_network_transmit_errs_total "$iface")
+  ne_rx_drop=$(_ne_val node_network_receive_drop_total "$iface")
+  ne_tx_drop=$(_ne_val node_network_transmit_drop_total "$iface")
+
   local speed duplex autoneg
   speed=$(echo "$ethtool_out" | grep -i "Speed:" | awk '{print $2}' | head -1 || true)
   duplex=$(echo "$ethtool_out" | grep -i "Duplex:" | awk '{print $2}' | head -1 || true)
@@ -269,6 +280,16 @@ run_wizard() {
   # dmesg: reset / reinit
   if echo "$dmesg_out" | grep -qi "reset\|reinit"; then
     findings+=("WARN"$'\t'"NIC reset/reinit events in kernel log"$'\t'"Kernel log shows NIC resets for ${iface}"$'\t'"Check full dmesg: dmesg | grep -i ${iface}")
+  fi
+
+  # node_exporter: RX errors > 0
+  if [[ -n "$ne_rx_err" ]] && [[ "$ne_rx_err" =~ ^[0-9]+$ ]] && [[ "$ne_rx_err" -gt 0 ]]; then
+    findings+=("WARN"$'\t'"RX errors (node_exporter)"$'\t'"${ne_rx_err} RX errors seen — possible cable or hardware fault"$'\t'"Check cable; run: ethtool -S ${iface} | grep -i error")
+  fi
+
+  # node_exporter: TX errors > 0
+  if [[ -n "$ne_tx_err" ]] && [[ "$ne_tx_err" =~ ^[0-9]+$ ]] && [[ "$ne_tx_err" -gt 0 ]]; then
+    findings+=("WARN"$'\t'"TX errors (node_exporter)"$'\t'"${ne_tx_err} TX errors seen — possible congestion or hardware fault"$'\t'"Check switch port; run: ethtool -S ${iface} | grep -i error")
   fi
 
   # 5. Pattern analysis — use TMPFILE events for the interface
@@ -322,6 +343,21 @@ run_wizard() {
   _rpt "  duplex         : ${duplex:-unknown}"
   _rpt "  autoneg        : ${autoneg:-unknown}"
   _rpt "  power/control  : ${power_control:-unknown}"
+  if [[ -n "$_NE_METRICS_CACHE" ]]; then
+    local ne_state_str=""
+    if [[ "$ne_up" == "1" ]]; then
+      ne_state_str="UP"
+    elif [[ "$ne_up" == "0" ]]; then
+      ne_state_str="DOWN"
+    fi
+    _rpt ""
+    _rpt "${BOLD}node_exporter Metrics${RESET}"
+    if [[ -n "$ne_state_str" ]]; then _rpt "  link state     : ${ne_state_str}"; fi
+    if [[ -n "$ne_rx_err"    ]]; then _rpt "  RX errors      : ${ne_rx_err} total"; fi
+    if [[ -n "$ne_tx_err"    ]]; then _rpt "  TX errors      : ${ne_tx_err} total"; fi
+    if [[ -n "$ne_rx_drop"   ]]; then _rpt "  RX drops       : ${ne_rx_drop} total"; fi
+    if [[ -n "$ne_tx_drop"   ]]; then _rpt "  TX drops       : ${ne_tx_drop} total"; fi
+  fi
   _rpt ""
   _rpt "${BOLD}Findings${RESET}"
 
@@ -492,6 +528,60 @@ show_prometheus_context() {
   [[ -n "$tx_drop" ]] && printf "    TX drops        : %.2f/min\n" "$tx_drop"
 }
 
+# ── node_exporter ─────────────────────────────────────────────────────────────
+_NE_METRICS_CACHE=""
+
+fetch_node_exporter() {
+  # Fetch /metrics from node_exporter; cache result in _NE_METRICS_CACHE.
+  # Returns 0 if data was fetched, 1 otherwise.
+  # _LINK_FLAP_TEST_NODE_EXPORTER: path to canned metrics file (test hook).
+  [[ "$NODE_EXPORTER_URL" == "off" ]] && return 1
+  if [[ -n "${_LINK_FLAP_TEST_NODE_EXPORTER:-}" ]]; then
+    _NE_METRICS_CACHE=$(cat "$_LINK_FLAP_TEST_NODE_EXPORTER" 2>/dev/null || true)
+  else
+    _NE_METRICS_CACHE=$(curl -sf --max-time 3 "${NODE_EXPORTER_URL}/metrics" 2>/dev/null || true)
+  fi
+  [[ -n "$_NE_METRICS_CACHE" ]]
+}
+
+_ne_val() {
+  # Extract a scalar metric value for a specific device from _NE_METRICS_CACHE.
+  local metric="$1" iface="$2"
+  echo "$_NE_METRICS_CACHE" | awk -v m="$metric" -v d="$iface" '
+    /^#/ { next }
+    index($0, m "{") == 1 && index($0, "device=\"" d "\"") { print $NF; exit }
+  ' 2>/dev/null || true
+}
+
+show_node_exporter_context() {
+  # Print a [node_exporter] enrichment block for the given interface.
+  # Skips if NE data is not cached, iface is synthetic (stp-*/lacp-*), or no data found.
+  local iface="$1"
+  [[ -z "$_NE_METRICS_CACHE" ]] && return
+  [[ "$iface" =~ ^(stp|lacp)- ]] && return
+
+  local up carrier rx_err tx_err rx_drop tx_drop
+  up=$(_ne_val node_network_up "$iface")
+  carrier=$(_ne_val node_network_carrier_changes_total "$iface")
+  rx_err=$(_ne_val node_network_receive_errs_total "$iface")
+  tx_err=$(_ne_val node_network_transmit_errs_total "$iface")
+  rx_drop=$(_ne_val node_network_receive_drop_total "$iface")
+  tx_drop=$(_ne_val node_network_transmit_drop_total "$iface")
+
+  [[ -z "$up" && -z "$carrier" ]] && return
+
+  echo -e "  ${CYAN}[node_exporter]${RESET}"
+  if [[ -n "$up" ]]; then
+    local s; [[ "$up" == "1" ]] && s="${GREEN}UP${RESET}" || s="${RED}DOWN${RESET}"
+    echo -e "    Current state   : $s"
+  fi
+  [[ -n "$carrier" ]] && printf "    Carrier changes : %s total since boot\n" "$carrier"
+  [[ -n "$rx_err"  ]] && printf "    RX errors       : %s total\n" "$rx_err"
+  [[ -n "$tx_err"  ]] && printf "    TX errors       : %s total\n" "$tx_err"
+  [[ -n "$rx_drop" ]] && printf "    RX drops        : %s total\n" "$rx_drop"
+  [[ -n "$tx_drop" ]] && printf "    TX drops        : %s total\n" "$tx_drop"
+}
+
 parse_events() {
   # Reads raw log lines from stdin, writes "epoch iface STATE" to stdout.
   # Implemented entirely in awk — no subshell spawning per line.
@@ -647,6 +737,9 @@ sort -u "$TMPFILE" -o "$TMPFILE"
 # ── Step 3: Analyse for flapping ─────────────────────────────────────────────
 # For each interface: count state transitions, report if >= FLAP_THRESHOLD
 
+# Probe node_exporter once; result cached for wizard and per-interface blocks below
+fetch_node_exporter || true
+
 if [[ -n "$DIAG_IFACE" ]]; then run_wizard "$DIAG_IFACE"; fi
 
 FLAPPING_FOUND=0
@@ -659,6 +752,7 @@ echo -e "${BOLD}Link Flap Detector${RESET} — source: ${LOG_SOURCE}"
 echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} transitions"
 [[ -n "$IFACE_FILTER" ]] && echo -e "Interface filter: ${CYAN}${IFACE_FILTER}${RESET}"
 [[ -n "$PROM_URL" ]] && echo -e "Prometheus: ${CYAN}${PROM_URL}${RESET}"
+[[ -n "$_NE_METRICS_CACHE" ]] && echo -e "node_exporter: ${CYAN}${NODE_EXPORTER_URL}${RESET}"
 echo ""
 
 if [[ ${#IFACES[@]} -eq 0 ]]; then
@@ -711,6 +805,7 @@ for iface in "${IFACES[@]}"; do
       done
     fi
     show_prometheus_context "$iface"
+    show_node_exporter_context "$iface"
     echo ""
   else
     if [[ "$VERBOSE" -eq 1 ]]; then
@@ -719,6 +814,7 @@ for iface in "${IFACES[@]}"; do
         echo -e "$el"
       done
       show_prometheus_context "$iface"
+      show_node_exporter_context "$iface"
       echo ""
     fi
   fi

@@ -52,6 +52,7 @@ chmod +x link-flap-detect.sh
 | `-i IFACE` | Limit output to a specific interface | (all) |
 | `-p PCAP_FILE` | Analyse a packet capture file with tshark | (none) |
 | `-m URL` | Prometheus base URL for metric enrichment | (none) |
+| `-e URL` | node_exporter metrics URL (auto-probed at `http://localhost:9100`; pass `off` to disable) | `http://localhost:9100` |
 | `-d IFACE` | Run diagnostic wizard for IFACE | (none) |
 | `-R BACKUP_ID` | Restore config files from a saved backup | (none) |
 | `-v` | Verbose — show every individual up/down event | off |
@@ -166,6 +167,55 @@ omitted; the tool still runs and reports from its log/pcap sources.
     TX errors       : 0.00/min
     RX drops        : 2.10/min
     TX drops        : 0.00/min
+```
+
+## node_exporter enrichment
+
+When `node_exporter` is running on the machine (typically at `http://localhost:9100`), the tool
+automatically probes it and shows live interface counters alongside flap detection output — no
+configuration needed.
+
+To override the URL or disable probing:
+
+```bash
+# Use a non-default port
+./link-flap-detect.sh -e http://localhost:9200
+
+# Disable node_exporter probing entirely
+./link-flap-detect.sh -e off
+```
+
+Metrics shown (raw totals since boot, from the Prometheus text format):
+
+| Metric | Display |
+|---|---|
+| `node_network_up` | Current link state (UP / DOWN) |
+| `node_network_carrier_changes_total` | Carrier changes since boot |
+| `node_network_receive_errs_total` | RX errors total |
+| `node_network_transmit_errs_total` | TX errors total |
+| `node_network_receive_drop_total` | RX drops total |
+| `node_network_transmit_drop_total` | TX drops total |
+
+The `[node_exporter]` block appears below `[FLAPPING]` lines (and below `[ACTIVE]` lines in verbose
+mode). Synthetic tshark interfaces (`stp-*`, `lacp-*`) are skipped — node_exporter has no matching
+device for them.
+
+The diagnostic wizard (`-d IFACE`) also reads node_exporter metrics: they appear in the Interface
+State section of the report, and RX/TX error totals above zero are flagged as `[WARN]` findings.
+
+If node_exporter is unreachable the tool runs normally and the enrichment block is silently omitted.
+
+**Example output:**
+```
+[FLAPPING] eth0
+  Transitions : 4  |  Events: 5  |  Span: 10:00:00–10:10:00 (10m 0s)
+  [node_exporter]
+    Current state   : UP
+    Carrier changes : 12 total since boot
+    RX errors       : 0 total
+    TX errors       : 0 total
+    RX drops        : 3 total
+    TX drops        : 0 total
 ```
 
 ## tshark / PCAP mode

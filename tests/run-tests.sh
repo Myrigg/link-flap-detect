@@ -99,6 +99,26 @@ run_rollback_test() {
   OUT=$(BACKUP_DIR="$TESTDIR/backups" bash "$SCRIPT" -R "$bid" "$@" 2>&1) || EXITCODE=$?
 }
 
+# run_with_ne INPUT_FILE NE_METRICS_FILE [SCRIPT_ARGS...]
+# Combines _LINK_FLAP_TEST_INPUT and _LINK_FLAP_TEST_NODE_EXPORTER for NE enrichment tests.
+run_with_ne() {
+  local input_f="$1" ne_f="$2"; shift 2
+  OUT=''; EXITCODE=0
+  OUT=$(_LINK_FLAP_TEST_INPUT="$input_f" _LINK_FLAP_TEST_NODE_EXPORTER="$ne_f" \
+        bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_wizard_ne_test WIZARD_DIR NE_METRICS_FILE [SCRIPT_ARGS...]
+# Runs the diagnostic wizard with canned sysfs/command output AND canned NE metrics.
+run_wizard_ne_test() {
+  local wiz_dir="$1" ne_f="$2"; shift 2
+  OUT=''; EXITCODE=0
+  OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+        _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
+        _LINK_FLAP_TEST_NODE_EXPORTER="$ne_f" \
+        bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
 # run_real_wizard_test IFACE [SCRIPT_ARGS...]
 # Runs the diagnostic wizard against a real interface — no sysfs/command mocking.
 run_real_wizard_test() {
@@ -679,6 +699,87 @@ else
   fail "wizard: carrier_changes=50 → [WARN] in output" "exit=$EXITCODE\n$OUT"
 fi
 
+# ── Offline tests (42–45): synthetic node_exporter metrics ───────────────────
+# Uses _LINK_FLAP_TEST_NODE_EXPORTER to inject canned Prometheus text-format responses.
+# No real node_exporter or network access required.
+
+# Shared canned node_exporter metrics file for tests 42–44
+NE_CANNED=$(mktemp "$TESTDIR/ne-XXXXXX.txt")
+cat > "$NE_CANNED" <<'EOF'
+# HELP node_network_up Value is 1 if operstate is 'up', 0 otherwise.
+node_network_up{device="eth0"} 1
+node_network_carrier_changes_total{device="eth0"} 5
+node_network_receive_errs_total{device="eth0"} 0
+node_network_transmit_errs_total{device="eth0"} 0
+node_network_receive_drop_total{device="eth0"} 0
+node_network_transmit_drop_total{device="eth0"} 0
+EOF
+
+# 42. eth0 flapping + canned NE data → [node_exporter] block shown
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+run_with_ne "$t" "$NE_CANNED" -w 60 -t 3
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && echo "$OUT" | grep -q "\[node_exporter\]"; then
+  pass "42: node_exporter: flapping eth0 shows [node_exporter] block"
+else
+  fail "42: node_exporter: flapping eth0 shows [node_exporter] block" "exit=$EXITCODE\n$OUT"
+fi
+
+# 43. eth0 flapping + -e off → no [node_exporter] block (NE disabled)
+run_with_ne "$t" "$NE_CANNED" -w 60 -t 3 -e off
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && ! echo "$OUT" | grep -q "\[node_exporter\]"; then
+  pass "43: node_exporter: -e off disables [node_exporter] block"
+else
+  fail "43: node_exporter: -e off disables [node_exporter] block" "exit=$EXITCODE\n$OUT"
+fi
+
+# 44. stp-* synthetic iface + canned NE data → [node_exporter] block skipped
+t=$(mktemp "$TESTDIR/XXXXXX.dat")
+cat > "$t" <<EOF
+1709386700 stp-aabb DOWN
+1709386760 stp-aabb UP
+1709386820 stp-aabb DOWN
+1709386880 stp-aabb UP
+EOF
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_TSHARK="$t" _LINK_FLAP_TEST_NODE_EXPORTER="$NE_CANNED" \
+      bash "$SCRIPT" -w 60 -t 3 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && ! echo "$OUT" | grep -q "\[node_exporter\]"; then
+  pass "44: node_exporter: synthetic stp-* iface → [node_exporter] block skipped"
+else
+  fail "44: node_exporter: synthetic stp-* iface → [node_exporter] block skipped" "exit=$EXITCODE\n$OUT"
+fi
+
+# 45. Wizard with canned NE metrics showing rx_errors=10 → [WARN] + "RX errors" in output
+NE_ERRORS=$(mktemp "$TESTDIR/ne-err-XXXXXX.txt")
+cat > "$NE_ERRORS" <<'EOF'
+node_network_up{device="eth0"} 1
+node_network_receive_errs_total{device="eth0"} 10
+node_network_transmit_errs_total{device="eth0"} 0
+EOF
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-ne-XXXXXX")
+echo "up" > "$wiz_dir/operstate"
+run_wizard_ne_test "$wiz_dir" "$NE_ERRORS" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] \
+   && echo "$OUT" | grep -q "\[WARN\]" \
+   && echo "$OUT" | grep -qi "RX errors"; then
+  pass "45: node_exporter: wizard with rx_errors=10 → [WARN] with 'RX errors'"
+else
+  fail "45: node_exporter: wizard with rx_errors=10 → [WARN] with 'RX errors'" "exit=$EXITCODE\n$OUT"
+fi
+
 # ── Live system tests (38–41) ─────────────────────────────────────────────────
 # These tests read from actual system sources — no synthetic log injection.
 # They require root privileges and a running systemd (journald).
@@ -775,6 +876,23 @@ else
     pass "41: live journald -i ${REAL_IFACE} — filter label present, exit=$EXITCODE"
   else
     fail "41: live journald -i ${REAL_IFACE} — filter label present" "exit=$EXITCODE\n$OUT"
+  fi
+fi
+
+# 46. Live node_exporter probe — header shows "node_exporter:" if running at default URL
+_NE_URL="${NODE_EXPORTER_URL:-http://localhost:9100}"
+REAL_IFACE=$(_real_iface)
+if [[ -z "$REAL_IFACE" ]]; then
+  skip "46: live node_exporter probe (no physical interface found)"
+elif ! curl -sf --max-time 3 "${_NE_URL}/metrics" &>/dev/null; then
+  skip "46: live node_exporter probe (not running at ${_NE_URL})"
+else
+  OUT=''; EXITCODE=0
+  OUT=$(bash "$SCRIPT" -w 5 -i "$REAL_IFACE" 2>&1) || EXITCODE=$?
+  if [[ $EXITCODE -le 1 ]] && echo "$OUT" | grep -q "node_exporter"; then
+    pass "46: live node_exporter — probed at ${_NE_URL}, shown in header (exit=$EXITCODE)"
+  else
+    fail "46: live node_exporter — probed at ${_NE_URL}, shown in header" "exit=$EXITCODE\n$OUT"
   fi
 fi
 
