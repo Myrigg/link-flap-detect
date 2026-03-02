@@ -673,13 +673,13 @@ show_iperf3_context() {
   if [[ -n "$bps" ]]; then
     local mbps
     mbps=$(python3 -c "import sys; print(f'{float(sys.argv[1])/1e6:.1f}')" "$bps" 2>/dev/null || echo "?")
-    echo "    Bandwidth     : ${mbps} Mbps"
+    printf "    Bandwidth       : %s Mbps\n" "$mbps"
   fi
   if [[ -n "$retransmits" ]]; then
     if [[ "$retransmits" =~ ^[0-9]+$ ]] && [[ "$retransmits" -gt 0 ]]; then
-      echo -e "    Retransmits   : ${YELLOW}${retransmits}${RESET}"
+      echo -e "    Retransmits     : ${YELLOW}${retransmits}${RESET}"
     else
-      echo "    Retransmits   : ${retransmits}"
+      echo    "    Retransmits     : ${retransmits}"
     fi
   fi
 }
@@ -896,7 +896,8 @@ for iface in "${IFACES[@]}"; do
     state=$(echo "$evt" | awk '{print $3}')
     ts_human=$(date -d "@$epoch" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "unknown")
 
-    event_lines+=("  ${DIM}${ts_human}${RESET}  ${state}")
+    _sc="$RED"; [[ "$state" == "UP" ]] && _sc="$GREEN"
+    event_lines+=("  ${DIM}${ts_human}${RESET}  ${_sc}${state}${RESET}")
 
     if [[ -n "$prev_state" && "$state" != "$prev_state" ]]; then
       (( transitions++ )) || true
@@ -930,7 +931,7 @@ for iface in "${IFACES[@]}"; do
     echo ""
   else
     if [[ "$VERBOSE" -eq 1 ]]; then
-      echo -e "${YELLOW}[ACTIVE]${RESET}  ${BOLD}${iface}${RESET} — ${transitions} transition(s) in window (below threshold)"
+      echo -e "${YELLOW}${BOLD}[ACTIVE]${RESET}  ${BOLD}${iface}${RESET} — ${transitions} transition(s) in window (below threshold)"
       for el in "${event_lines[@]}"; do
         echo -e "$el"
       done
