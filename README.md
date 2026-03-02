@@ -13,8 +13,8 @@ No build step, no package manager. The script runs on any Ubuntu 20.04+ system o
 
 **Or download just the script:**
 ```bash
-curl -O https://raw.githubusercontent.com/Myrigg/link-flap-detect/main/link-flap-detect.sh
-chmod +x link-flap-detect.sh
+curl -O https://raw.githubusercontent.com/Myrigg/link-flap-detect/main/flap
+chmod +x flap
 ```
 
 ### Requirements
@@ -26,7 +26,7 @@ chmod +x link-flap-detect.sh
 | `awk`, `sort`, `date`, `mktemp` | Core | Pre-installed (coreutils) |
 | `curl` | Prometheus enrichment (`-m`) | `apt install curl` |
 | `tshark` | PCAP analysis (`-p`) | `apt install tshark` — optional |
-| `iperf3` | Active bandwidth probe (`-3`) | `apt install iperf3` — optional |
+| `iperf3` | Active bandwidth probe (`-b`) | `apt install iperf3` — optional |
 
 `curl`, `tshark`, and `iperf3` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install.
 
@@ -41,7 +41,7 @@ chmod +x link-flap-detect.sh
 ## Usage
 
 ```
-./link-flap-detect.sh [OPTIONS]
+./flap [OPTIONS]
 ```
 
 ### Options
@@ -53,10 +53,10 @@ chmod +x link-flap-detect.sh
 | `-i IFACE` | Limit output to a specific interface | (all) |
 | `-p PCAP_FILE` | Analyse a packet capture file with tshark | (none) |
 | `-m URL` | Prometheus base URL for metric enrichment | (none) |
-| `-e URL` | node_exporter metrics URL (auto-probed at `http://localhost:9100`; pass `off` to disable) | `http://localhost:9100` |
-| `-3 SERVER` | Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment | (none) |
+| `-n URL` | node_exporter metrics URL (auto-probed at `http://localhost:9100`; pass `off` to disable) | `http://localhost:9100` |
+| `-b SERVER` | Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment | (none) |
 | `-d IFACE` | Run diagnostic wizard for IFACE | (none) |
-| `-R BACKUP_ID` | Restore config files from a saved backup | (none) |
+| `-r BACKUP_ID` | Restore config files from a saved backup | (none) |
 | `-f SECONDS` | Follow mode: re-run every N seconds until Ctrl-C | (off) |
 | `-v` | Verbose — show every individual up/down event | off |
 | `-h` | Show help | |
@@ -67,48 +67,48 @@ Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRES
 
 **Scan the last 60 minutes of system logs (default):**
 ```bash
-./link-flap-detect.sh
+./flap
 ```
 
 **Scan the last 2 hours, flag after 5 transitions:**
 ```bash
-./link-flap-detect.sh -w 120 -t 5
+./flap -w 120 -t 5
 ```
 
 **Check a specific interface only:**
 ```bash
-./link-flap-detect.sh -i eth0
+./flap -i eth0
 ```
 
 **Verbose output — show every UP/DOWN event:**
 ```bash
-./link-flap-detect.sh -v
+./flap -v
 ```
 
 **Analyse a packet capture for STP/LACP flap evidence:**
 ```bash
-./link-flap-detect.sh -p /tmp/capture.pcap
+./flap -p /tmp/capture.pcap
 ```
 
 **Capture live traffic then analyse it:**
 ```bash
 tshark -w /tmp/capture.pcap -a duration:60 -i eth0
-./link-flap-detect.sh -p /tmp/capture.pcap -v
+./flap -p /tmp/capture.pcap -v
 ```
 
 **PCAP + interface filter (only report stp-aabb events):**
 ```bash
-./link-flap-detect.sh -p /tmp/capture.pcap -i stp-aabb
+./flap -p /tmp/capture.pcap -i stp-aabb
 ```
 
 **Check bandwidth while a link is flapping (iperf3 enrichment):**
 ```bash
-./link-flap-detect.sh -3 iperf3.example.com
+./flap -b iperf3.example.com
 ```
 
 **Wizard + iperf3 probe together:**
 ```bash
-./link-flap-detect.sh -d eth0 -3 iperf3.example.com
+./flap -d eth0 -b iperf3.example.com
 ```
 
 **Run the diagnostic wizard on eth0:**
@@ -117,28 +117,28 @@ tshark -w /tmp/capture.pcap -a duration:60 -i eth0
 ip link show
 
 # Then run the wizard:
-./link-flap-detect.sh -d eth0 -w 60
+./flap -d eth0 -w 60
 ```
 
 **Watch for flapping in real time (re-scan every 30 seconds):**
 ```bash
-./link-flap-detect.sh -f 30
+./flap -f 30
 ```
 
 **Follow mode with interface filter (Ctrl-C to stop):**
 ```bash
-./link-flap-detect.sh -f 10 -i eth0 -v
+./flap -f 10 -i eth0 -v
 ```
 
 **List all saved config backups:**
 ```bash
-./link-flap-detect.sh -R list
+./flap -r list
 ```
 
 **Restore a backup:**
 ```bash
 # Restoring files in /etc/ requires root:
-sudo ./link-flap-detect.sh -R 20260302-143000-eth0
+sudo ./flap -r 20260302-143000-eth0
 ```
 
 ## Log sources
@@ -155,7 +155,7 @@ Requires a running Prometheus server scraping [node_exporter](https://github.com
 Pass the base URL with `-m`:
 
 ```bash
-./link-flap-detect.sh -m http://localhost:9090
+./flap -m http://localhost:9090
 ```
 
 For each flapping interface the tool queries these metrics and displays them below
@@ -202,10 +202,10 @@ To override the URL or disable probing:
 
 ```bash
 # Use a non-default port
-./link-flap-detect.sh -e http://localhost:9200
+./flap -n http://localhost:9200
 
 # Disable node_exporter probing entirely
-./link-flap-detect.sh -e off
+./flap -n off
 ```
 
 Metrics shown (raw totals since boot, from the Prometheus text format):
@@ -248,10 +248,10 @@ with real bandwidth and TCP retransmit data from an active 5-second TCP test.
 
 **Prerequisite:** `apt install iperf3`
 
-Pass the target server hostname or IP with `-3`:
+Pass the target server hostname or IP with `-b`:
 
 ```bash
-./link-flap-detect.sh -3 iperf3.example.com
+./flap -b iperf3.example.com
 ```
 
 For each flapping interface the tool runs the probe once (result cached) and shows a `[iperf3]`
@@ -268,7 +268,7 @@ as a `[WARN]` finding with a recommendation to test longer and check switch port
 Synthetic tshark interfaces (`stp-*`, `lacp-*`) are skipped — they have no corresponding
 network path to test.
 
-If iperf3 is not installed and `-3` is passed the tool exits immediately with an error message.
+If iperf3 is not installed and `-b` is passed the tool exits immediately with an error message.
 If the server is unreachable or the test fails the section is silently omitted.
 
 **Example output:**
@@ -297,7 +297,7 @@ structured report of likely flap causes and recommended fixes:
 ip link show
 
 # Run the wizard (no root needed — it only reads, never writes to /etc/):
-./link-flap-detect.sh -d eth0
+./flap -d eth0
 ```
 
 The wizard:
@@ -310,9 +310,9 @@ The wizard:
 
 Override save locations via environment variables: `BACKUP_DIR`, `REPORT_DIR`.
 
-After applying a `[FIX]` command, re-run `./link-flap-detect.sh -i IFACE -w 10` to confirm the interface has stabilised.
+After applying a `[FIX]` command, re-run `./flap -i IFACE -w 10` to confirm the interface has stabilised.
 
-## Backup & Rollback (`-R BACKUP_ID`)
+## Backup & Rollback (`-r BACKUP_ID`)
 
 Every wizard run automatically backs up the system network config files
 (netplan, interfaces, NetworkManager connections, sysctl) before you apply any fix.
@@ -320,13 +320,13 @@ Backups are stored in `~/.local/share/link-flap/backups/` (override via `BACKUP_
 
 **List saved backups:**
 ```bash
-./link-flap-detect.sh -R list
+./flap -r list
 ```
 
 **Restore a backup:**
 ```bash
 # Files in /etc/ require root to overwrite:
-sudo ./link-flap-detect.sh -R 20260302-143000-eth0
+sudo ./flap -r 20260302-143000-eth0
 ```
 
 If restoration fails due to permissions the tool exits with code 1, prints a warning

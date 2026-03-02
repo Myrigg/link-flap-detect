@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/run-tests.sh
-# Non-destructive test suite for link-flap-detect.sh
+# Non-destructive test suite for flap
 #
 # Properties guaranteed:
 #   - No system logs are read  (uses _LINK_FLAP_TEST_INPUT to inject synthetic data)
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/link-flap-detect.sh"
+SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/flap"
 
 if [[ ! -f "$SCRIPT" ]]; then
   echo "Error: $SCRIPT not found." >&2; exit 1
@@ -96,7 +96,7 @@ run_wizard_test() {
 run_rollback_test() {
   local bid="$1"; shift
   OUT=''; EXITCODE=0
-  OUT=$(BACKUP_DIR="$TESTDIR/backups" bash "$SCRIPT" -R "$bid" "$@" 2>&1) || EXITCODE=$?
+  OUT=$(BACKUP_DIR="$TESTDIR/backups" bash "$SCRIPT" -r "$bid" "$@" 2>&1) || EXITCODE=$?
 }
 
 # run_with_ne INPUT_FILE NE_METRICS_FILE [SCRIPT_ARGS...]
@@ -125,7 +125,7 @@ run_with_iperf3() {
   local input_f="$1" iperf3_f="$2"; shift 2
   OUT=''; EXITCODE=0
   OUT=$(_LINK_FLAP_TEST_INPUT="$input_f" _LINK_FLAP_TEST_IPERF3="$iperf3_f" \
-        bash "$SCRIPT" -3 test-server.example.com "$@" 2>&1) || EXITCODE=$?
+        bash "$SCRIPT" -b test-server.example.com "$@" 2>&1) || EXITCODE=$?
 }
 
 # run_wizard_iperf3_test WIZARD_DIR IPERF3_JSON [SCRIPT_ARGS...]
@@ -136,7 +136,7 @@ run_wizard_iperf3_test() {
   OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
         _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
         _LINK_FLAP_TEST_IPERF3="$iperf3_f" \
-        bash "$SCRIPT" -3 test-server.example.com "$@" 2>&1) || EXITCODE=$?
+        bash "$SCRIPT" -b test-server.example.com "$@" 2>&1) || EXITCODE=$?
 }
 
 # run_real_wizard_test IFACE [SCRIPT_ARGS...]
@@ -154,7 +154,7 @@ run_real_wizard_test() {
 # machine — root not required.
 
 echo ""
-echo -e "${BOLD}link-flap-detect.sh — test suite${RESET}"
+echo -e "${BOLD}flap — test suite${RESET}"
 echo ""
 echo -e "${BOLD}Offline tests${RESET} — synthetic data, no system dependencies"
 echo ""
@@ -700,23 +700,23 @@ else
   fail "wizard: creates backup dir with at least one backup subdirectory" "exit=$EXITCODE backups=$backup_count\n$OUT"
 fi
 
-# 33. -R list shows available backups
+# 33. -r list shows available backups
 mkdir -p "$TESTDIR/backups/20240101-000000-eth0"
 printf '%s\n' "iface=eth0" "ts=20240101-000000" "files=" \
   > "$TESTDIR/backups/20240101-000000-eth0/.manifest"
 run_rollback_test "list"
 if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "20240101-000000-eth0"; then
-  pass "rollback: -R list shows available backups"
+  pass "rollback: -r list shows available backups"
 else
-  fail "rollback: -R list shows available backups" "exit=$EXITCODE\n$OUT"
+  fail "rollback: -r list shows available backups" "exit=$EXITCODE\n$OUT"
 fi
 
-# 34. -R nonexistent-id → exit 1 + "not found"
+# 34. -r nonexistent-id → exit 1 + "not found"
 run_rollback_test "nonexistent-backup-id-xyz"
 if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "not found"; then
-  pass "rollback: -R nonexistent-id → exit 1 + 'not found'"
+  pass "rollback: -r nonexistent-id → exit 1 + 'not found'"
 else
-  fail "rollback: -R nonexistent-id → exit 1 + 'not found'" "exit=$EXITCODE\n$OUT"
+  fail "rollback: -r nonexistent-id → exit 1 + 'not found'" "exit=$EXITCODE\n$OUT"
 fi
 
 # 35. EEE enabled → [CAUSE] + "EEE" in output
@@ -785,14 +785,14 @@ else
   fail "42: node_exporter: flapping eth0 shows [node_exporter] block" "exit=$EXITCODE\n$OUT"
 fi
 
-# 43. eth0 flapping + -e off → no [node_exporter] block (NE disabled)
-run_with_ne "$t" "$NE_CANNED" -w 60 -t 3 -e off
+# 43. eth0 flapping + -n off → no [node_exporter] block (NE disabled)
+run_with_ne "$t" "$NE_CANNED" -w 60 -t 3 -n off
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\]" \
    && ! echo "$OUT" | grep -q "\[node_exporter\]"; then
-  pass "43: node_exporter: -e off disables [node_exporter] block"
+  pass "43: node_exporter: -n off disables [node_exporter] block"
 else
-  fail "43: node_exporter: -e off disables [node_exporter] block" "exit=$EXITCODE\n$OUT"
+  fail "43: node_exporter: -n off disables [node_exporter] block" "exit=$EXITCODE\n$OUT"
 fi
 
 # 44. stp-* synthetic iface + canned NE data → [node_exporter] block skipped
@@ -1006,7 +1006,7 @@ cat > "$t" <<EOF
 EOF
 OUT=''; EXITCODE=0
 OUT=$(_LINK_FLAP_TEST_TSHARK="$t" _LINK_FLAP_TEST_IPERF3="$IPERF3_CLEAN" \
-      bash "$SCRIPT" -3 test-server.example.com -w 60 -t 3 2>&1) || EXITCODE=$?
+      bash "$SCRIPT" -b test-server.example.com -w 60 -t 3 2>&1) || EXITCODE=$?
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\]" \
    && ! echo "$OUT" | grep -q "\[iperf3\]"; then
@@ -1085,6 +1085,30 @@ if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "Verify"; then
   pass "57: wizard summary includes 'Verify' re-run hint"
 else
   fail "57: wizard summary includes 'Verify' re-run hint" "exit=$EXITCODE\n$OUT"
+fi
+
+# 58. Auto-wizard fires when flapping detected (no -d) and _LINK_FLAP_TEST_WIZARD_DIR provided
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-auto-XXXXXX")
+echo "up" > "$wiz_dir/operstate"
+OUT=''; EXITCODE=0
+OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+      _LINK_FLAP_TEST_INPUT="$t" \
+      _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
+      bash "$SCRIPT" -w 60 -t 3 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && echo "$OUT" | grep -q "Diagnostic:"; then
+  pass "58: auto-wizard fires on flapping detection (no -d flag needed)"
+else
+  fail "58: auto-wizard fires on flapping detection (no -d flag needed)" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
