@@ -20,7 +20,7 @@ if [[ ! -f "$SCRIPT" ]]; then
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 TESTDIR=$(mktemp -d /tmp/link-flap-tests-XXXXXX)
 trap 'rm -rf "$TESTDIR"' EXIT
 
@@ -37,6 +37,7 @@ fail() {
   echo -e "        ${YELLOW}$2${RESET}"
   (( FAIL++ )) || true
 }
+skip() { echo -e "  ${YELLOW}SKIP${RESET}  $1"; (( SKIP++ )) || true; }
 
 # ts N — ISO 8601 timestamp N seconds ago (always within any reasonable window)
 ts() { date -d "@$(( $(date +%s) - $1 ))" "+%Y-%m-%dT%H:%M:%S+0000"; }
@@ -96,6 +97,15 @@ run_rollback_test() {
   local bid="$1"; shift
   OUT=''; EXITCODE=0
   OUT=$(BACKUP_DIR="$TESTDIR/backups" bash "$SCRIPT" -R "$bid" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_real_wizard_test IFACE [SCRIPT_ARGS...]
+# Runs the diagnostic wizard against a real interface — no sysfs/command mocking.
+run_real_wizard_test() {
+  local iface="$1"; shift
+  OUT=''; EXITCODE=0
+  OUT=$(BACKUP_DIR="$TESTDIR/real-backups" REPORT_DIR="$TESTDIR/real-reports" \
+        bash "$SCRIPT" -d "$iface" "$@" 2>&1) || EXITCODE=$?
 }
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -663,15 +673,116 @@ else
   fail "wizard: carrier_changes=50 → [WARN] in output" "exit=$EXITCODE\n$OUT"
 fi
 
+# ── Real-data tests (38–41) ───────────────────────────────────────────────────
+# These tests read from actual system sources — no synthetic log injection.
+# They require root privileges and a running systemd (journald).
+# Each test skips gracefully if its prerequisite is unavailable.
+
+echo ""
+echo -e "${BOLD}Real-data tests (live system)${RESET}"
+echo ""
+
+# Helper: find first non-virtual, non-loopback interface
+_real_iface() {
+  ip link show 2>/dev/null \
+    | awk -F': ' '/^[0-9]/ && $2 !~ /^(lo|veth|virbr|docker|tun|tap|br-)/ {
+        sub(/@.*/, "", $2); print $2; exit
+      }'
+}
+
+# 38. Live journald code path — source label correct, output format valid
+if ! command -v journalctl &>/dev/null; then
+  skip "38: live journald scan (journalctl not available)"
+else
+  OUT=''; EXITCODE=0
+  OUT=$(bash "$SCRIPT" -w 5 2>&1) || EXITCODE=$?
+  if [[ $EXITCODE -le 1 ]] \
+     && echo "$OUT" | grep -q "Link Flap Detector" \
+     && echo "$OUT" | grep -q "journald" \
+     && echo "$OUT" | grep -qE "No link state events found|No flapping detected|\[FLAPPING\]"; then
+    pass "38: live journald — source=journald, valid output (exit=$EXITCODE)"
+  else
+    fail "38: live journald — source=journald, valid output" "exit=$EXITCODE\n$OUT"
+  fi
+fi
+
+# 39. Real /var/log/syslog — parse entire file without crashing
+if [[ ! -r /var/log/syslog ]]; then
+  skip "39: real syslog parse (/var/log/syslog not readable)"
+else
+  line_count=$(wc -l < /var/log/syslog)
+  OUT=''; EXITCODE=0
+  OUT=$(_LINK_FLAP_TEST_INPUT=/var/log/syslog bash "$SCRIPT" -w 9999 2>&1) || EXITCODE=$?
+  if [[ $EXITCODE -le 1 ]] && echo "$OUT" | grep -q "Link Flap Detector"; then
+    pass "39: real /var/log/syslog (${line_count} lines) parsed without error (exit=$EXITCODE)"
+  else
+    fail "39: real /var/log/syslog parsed without error" "exit=$EXITCODE lines=$line_count\n$OUT"
+  fi
+fi
+
+# 40. Real wizard on a live interface — reads actual sysfs; report matches /sys/class/net/
+REAL_IFACE=$(_real_iface)
+if [[ -z "$REAL_IFACE" ]]; then
+  skip "40: wizard on real interface (no physical interface found)"
+else
+  # Capture ground-truth values from sysfs before running the wizard
+  real_operstate=$(cat "/sys/class/net/${REAL_IFACE}/operstate" 2>/dev/null || echo "")
+  real_carrier_changes=$(cat "/sys/class/net/${REAL_IFACE}/carrier_changes" 2>/dev/null || echo "")
+
+  run_real_wizard_test "$REAL_IFACE" -w 5
+  report_count=$(ls -1 "$TESTDIR/real-reports" 2>/dev/null | wc -l)
+  backup_count=$(ls -1 "$TESTDIR/real-backups" 2>/dev/null | wc -l)
+
+  ok=1
+  [[ $EXITCODE -eq 0 ]]                              || ok=0
+  echo "$OUT" | grep -q "Diagnostic Report"          || ok=0
+  [[ $backup_count -gt 0 ]]                          || ok=0
+  [[ $report_count -gt 0 ]]                          || ok=0
+  # Verify the wizard read real sysfs: carrier_changes value must appear in output
+  if [[ -n "$real_carrier_changes" ]]; then
+    echo "$OUT" | grep -q "carrier_changes.*:.*${real_carrier_changes}" || ok=0
+  fi
+  # operstate value must appear in output
+  if [[ -n "$real_operstate" ]]; then
+    echo "$OUT" | grep -q "operstate.*:.*${real_operstate}" || ok=0
+  fi
+
+  if [[ $ok -eq 1 ]]; then
+    pass "40: wizard -d ${REAL_IFACE} reads real sysfs (operstate=${real_operstate}, carrier_changes=${real_carrier_changes})"
+  else
+    fail "40: wizard -d ${REAL_IFACE} reads real sysfs" \
+      "exit=$EXITCODE backups=$backup_count reports=$report_count operstate=${real_operstate} carrier_changes=${real_carrier_changes}\n$OUT"
+  fi
+fi
+
+# 41. Live journald with real interface filter — filter label shown, pipeline completes cleanly
+REAL_IFACE=$(_real_iface)
+if [[ -z "$REAL_IFACE" ]] || ! command -v journalctl &>/dev/null; then
+  skip "41: live journald with -i filter (journalctl or physical interface unavailable)"
+else
+  OUT=''; EXITCODE=0
+  OUT=$(bash "$SCRIPT" -w 5 -i "$REAL_IFACE" 2>&1) || EXITCODE=$?
+  if [[ $EXITCODE -le 1 ]] \
+     && echo "$OUT" | grep -q "Link Flap Detector" \
+     && echo "$OUT" | grep -q "Interface filter" \
+     && echo "$OUT" | grep -q "$REAL_IFACE"; then
+    pass "41: live journald -i ${REAL_IFACE} — filter label present, exit=$EXITCODE"
+  else
+    fail "41: live journald -i ${REAL_IFACE} — filter label present" "exit=$EXITCODE\n$OUT"
+  fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))
 echo ""
 if [[ $FAIL -eq 0 ]]; then
   echo -e "${GREEN}${BOLD}All ${TOTAL} tests passed.${RESET}"
+  [[ $SKIP -gt 0 ]] && echo -e "  ${YELLOW}(${SKIP} skipped — prerequisites not available on this system)${RESET}"
   echo ""
   exit 0
 else
   echo -e "${RED}${BOLD}${FAIL} of ${TOTAL} tests failed.${RESET}"
+  [[ $SKIP -gt 0 ]] && echo -e "  ${YELLOW}(${SKIP} skipped — prerequisites not available on this system)${RESET}"
   echo ""
   exit 1
 fi
