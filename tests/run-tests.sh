@@ -108,9 +108,15 @@ run_real_wizard_test() {
         bash "$SCRIPT" -d "$iface" "$@" 2>&1) || EXITCODE=$?
 }
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+# ── Offline tests (1–37) ──────────────────────────────────────────────────────
+# Entirely self-contained: all input is synthetic or canned. No journald, no
+# syslog files, no sysfs, no ethtool. Safe to run in CI, containers, or on any
+# machine — root not required.
+
 echo ""
 echo -e "${BOLD}link-flap-detect.sh — test suite${RESET}"
+echo ""
+echo -e "${BOLD}Offline tests${RESET} — synthetic data, no system dependencies"
 echo ""
 
 # 1. Empty log → exit 0, informational "no events" message
@@ -451,7 +457,7 @@ else
   fail "NM state change: malformed line after valid does not produce spurious event" "exit=$EXITCODE\n$OUT"
 fi
 
-# ── tshark tests (23–28) ──────────────────────────────────────────────────────
+# ── Offline tests (23–28): synthetic tshark/pcap data ────────────────────────
 # These tests mock tshark output using _LINK_FLAP_TEST_TSHARK. tshark need not
 # be installed — the test injects pre-canned "epoch iface state" lines directly.
 
@@ -554,7 +560,7 @@ else
   fail "tshark mixed STP+LACP: both stp-aabb and lacp-ccdd reported as flapping" "exit=$EXITCODE flap_count=$flap_count\n$OUT"
 fi
 
-# ── Prometheus enrichment tests (29–31) ───────────────────────────────────────
+# ── Offline tests (29–31): synthetic Prometheus API responses ────────────────
 # Tests mock the Prometheus API response via _LINK_FLAP_TEST_PROM. No real
 # Prometheus server needed. Two canned response files are created per run.
 
@@ -609,7 +615,7 @@ else
   fail "Prometheus enrichment: synthetic stp-* iface → [Prometheus] block skipped" "exit=$EXITCODE\n$OUT"
 fi
 
-# ── Backup/Rollback + Diagnostic Wizard tests (32–37) ────────────────────────
+# ── Offline tests (32–37): canned sysfs/command data, backup/wizard logic ────
 
 # 32. Wizard creates backup dir and a subdirectory inside it
 wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
@@ -673,13 +679,13 @@ else
   fail "wizard: carrier_changes=50 → [WARN] in output" "exit=$EXITCODE\n$OUT"
 fi
 
-# ── Real-data tests (38–41) ───────────────────────────────────────────────────
+# ── Live system tests (38–41) ─────────────────────────────────────────────────
 # These tests read from actual system sources — no synthetic log injection.
 # They require root privileges and a running systemd (journald).
 # Each test skips gracefully if its prerequisite is unavailable.
 
 echo ""
-echo -e "${BOLD}Real-data tests (live system)${RESET}"
+echo -e "${BOLD}Live system tests${RESET} — reads journald, /var/log/syslog, and /sys/class/net on this machine"
 echo ""
 
 # Helper: find first non-virtual, non-loopback interface
