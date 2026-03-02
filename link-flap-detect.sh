@@ -163,7 +163,7 @@ parse_events() {
       if (match(seg, /\([a-z][a-z0-9_-]+\)/)) {
         iface = substr(seg, RSTART+1, RLENGTH-2)
       }
-      state = (seg ~ /connected$/) ? "UP" : "DOWN"
+      state = (seg ~ /link connected$/) ? "UP" : "DOWN"
 
     # NetworkManager: "device (<iface>): state change: ... -> <new_state>"
     } else if (lower ~ /device \([a-z][a-z0-9_-]+\): state change:/) {
@@ -215,7 +215,12 @@ parse_events() {
 # ── Step 2: Populate TMPFILE ──────────────────────────────────────────────────
 LOG_SOURCE="journald"
 
-if command -v journalctl &>/dev/null; then
+if [[ -n "${_LINK_FLAP_TEST_INPUT:-}" ]]; then
+  # Test hook: bypass journald/syslog and read from a supplied file.
+  # Set by the test suite only — not a documented end-user option.
+  LOG_SOURCE="test-input"
+  collect_from_syslog "$_LINK_FLAP_TEST_INPUT" | parse_events >> "$TMPFILE"
+elif command -v journalctl &>/dev/null; then
   collect_from_journald | parse_events >> "$TMPFILE"
 else
   LOG_SOURCE="syslog files"
