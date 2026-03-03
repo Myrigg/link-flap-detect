@@ -75,7 +75,8 @@ cat > "$t" <<EOF
 1709386880 stp-aabb UP
 EOF
 OUT=''; EXITCODE=0
-OUT=$(_LINK_FLAP_TEST_TSHARK="$t" _LINK_FLAP_TEST_IPERF3="$IPERF3_CLEAN" \
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-iperf3" \
+      _LINK_FLAP_TEST_TSHARK="$t" _LINK_FLAP_TEST_IPERF3="$IPERF3_CLEAN" \
       bash "$SCRIPT" -b test-server.example.com -w 60 -t 3 2>&1) || EXITCODE=$?
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\]" \

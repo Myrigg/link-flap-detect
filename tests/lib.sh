@@ -35,6 +35,7 @@ PASS=0; FAIL=0; SKIP=0
 # ── Temp directory (cleaned on exit) ─────────────────────────────────────────
 TESTDIR=$(mktemp -d /tmp/link-flap-tests-XXXXXX)
 trap 'rm -rf "$TESTDIR"' EXIT
+export XDG_CONFIG_HOME="$TESTDIR/xdg"
 
 # ── Colours (disabled when stdout is not a terminal) ─────────────────────────
 if [[ -t 1 ]]; then
@@ -135,18 +136,22 @@ run_wizard_ne_test() {
 }
 
 # run_with_iperf3 INPUT_FILE IPERF3_JSON [SCRIPT_ARGS...]
+# XDG_CONFIG_HOME is redirected so -b doesn't persist IPERF3_SERVER to the real config.
 run_with_iperf3() {
   local input_f="$1" iperf3_f="$2"; shift 2
   OUT=''; EXITCODE=0
-  OUT=$(_LINK_FLAP_TEST_INPUT="$input_f" _LINK_FLAP_TEST_IPERF3="$iperf3_f" \
+  OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-iperf3" \
+        _LINK_FLAP_TEST_INPUT="$input_f" _LINK_FLAP_TEST_IPERF3="$iperf3_f" \
         bash "$SCRIPT" -b test-server.example.com "$@" 2>&1) || EXITCODE=$?
 }
 
 # run_wizard_iperf3_test WIZARD_DIR IPERF3_JSON [SCRIPT_ARGS...]
+# XDG_CONFIG_HOME is redirected so -b doesn't persist IPERF3_SERVER to the real config.
 run_wizard_iperf3_test() {
   local wiz_dir="$1" iperf3_f="$2"; shift 2
   OUT=''; EXITCODE=0
-  OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+  OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-iperf3" \
+        BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
         _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
         _LINK_FLAP_TEST_IPERF3="$iperf3_f" \
         bash "$SCRIPT" -b test-server.example.com "$@" 2>&1) || EXITCODE=$?
@@ -163,10 +168,12 @@ run_real_wizard_test() {
 
 # run_fleet_test PROM_ALL_JSON [SCRIPT_ARGS...]
 # Runs flap in fleet mode with a canned multi-result Prometheus JSON file.
+# XDG_CONFIG_HOME is redirected so -m doesn't persist PROM_URL to the real config.
 run_fleet_test() {
   local prom_all="$1"; shift
   OUT=''; EXITCODE=0
-  OUT=$(_LINK_FLAP_TEST_PROM_ALL="$prom_all" \
+  OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-fleet" \
+        _LINK_FLAP_TEST_PROM_ALL="$prom_all" \
         bash "$SCRIPT" -m http://fake-prom:9090 --fleet "$@" 2>&1) || EXITCODE=$?
 }
 

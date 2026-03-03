@@ -136,7 +136,8 @@ run_fleet_test "$_f_flapping" \
   _LINK_FLAP_TEST_PROM="$_f_enrich"
 # prom_query() for enrichment reuses _LINK_FLAP_TEST_PROM; pass it inline via env
 OUT=''; EXITCODE=0
-OUT=$(_LINK_FLAP_TEST_PROM_ALL="$_f_flapping" \
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-fleet" \
+      _LINK_FLAP_TEST_PROM_ALL="$_f_flapping" \
       _LINK_FLAP_TEST_PROM="$_f_enrich" \
       bash "$SCRIPT" -m http://fake-prom:9090 --fleet 2>&1) || EXITCODE=$?
 
@@ -156,7 +157,8 @@ fi
 
 # 71. Fleet scan no flapping — all carrier counts below threshold; exit code 0
 OUT=''; EXITCODE=0
-OUT=$(_LINK_FLAP_TEST_PROM_ALL="$_f_clean" \
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-fleet" \
+      _LINK_FLAP_TEST_PROM_ALL="$_f_clean" \
       _LINK_FLAP_TEST_PROM="$_f_enrich" \
       bash "$SCRIPT" -m http://fake-prom:9090 --fleet 2>&1) || EXITCODE=$?
 
@@ -173,7 +175,8 @@ fi
 
 # 72. Fleet scan with -i filter — only the filtered device appears; other is absent
 OUT=''; EXITCODE=0
-OUT=$(_LINK_FLAP_TEST_PROM_ALL="$_f_filter" \
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-fleet" \
+      _LINK_FLAP_TEST_PROM_ALL="$_f_filter" \
       _LINK_FLAP_TEST_PROM="$_f_enrich" \
       bash "$SCRIPT" -m http://fake-prom:9090 --fleet -i eth0 2>&1) || EXITCODE=$?
 
@@ -189,8 +192,9 @@ else
 fi
 
 # 73. --fleet without -m fails with exit code 1 and an error message
+# Use a fresh config dir so no PROM_URL saved by tests 70-72 is visible.
 OUT=''; EXITCODE=0
-OUT=$(bash "$SCRIPT" --fleet 2>&1) || EXITCODE=$?
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-73" bash "$SCRIPT" --fleet 2>&1) || EXITCODE=$?
 
 ok=1
 [[ $EXITCODE -eq 1 ]]                               || ok=0

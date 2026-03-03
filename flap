@@ -145,6 +145,8 @@ _config_get() {
 # _save_config KEY VALUE — upsert a key in the config file atomically.
 _save_config() {
   local key="$1" value="$2"
+  # Never persist config during test runs
+  [[ -n "${_LINK_FLAP_TEST_INPUT:-}${_LINK_FLAP_TEST_TSHARK:-}${_LINK_FLAP_TEST_PROM:-}${_LINK_FLAP_TEST_NODE_EXPORTER:-}${_LINK_FLAP_TEST_IPERF3:-}${_LINK_FLAP_TEST_WIZARD_DIR:-}${_LINK_FLAP_TEST_PROM_ALL:-}" ]] && return 0
   [[ -z "$value" ]] && return 0
   mkdir -p "$_CONFIG_DIR"
   local tmpf; tmpf=$(mktemp)
@@ -159,6 +161,7 @@ _load_config() {
     PROM_URL=$(_config_get "PROM_URL")
   [[ "$_IPERF3_SERVER_FROM_FLAG" -eq 0 && -z "$IPERF3_SERVER" ]] && \
     IPERF3_SERVER=$(_config_get "IPERF3_SERVER")
+  return 0  # prevent set -e exit when last && condition is false
 }
 
 # ── Interactive prompts ────────────────────────────────────────────────────────

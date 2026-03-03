@@ -90,7 +90,8 @@ fi
 wiz_dir=$(mktemp -d "$TESTDIR/wiz-sysload-XXXXXX")
 echo "up" > "$wiz_dir/operstate"
 OUT=''; EXITCODE=0
-OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-sysload" \
+      BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
       _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
       _LINK_FLAP_TEST_PROM="$_prom_cpu_low" \
       _LINK_FLAP_TEST_INPUT="$_sysload_input" \
@@ -111,7 +112,8 @@ fi
 wiz_dir=$(mktemp -d "$TESTDIR/wiz-sysload-XXXXXX")
 echo "up" > "$wiz_dir/operstate"
 OUT=''; EXITCODE=0
-OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-sysload" \
+      BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
       _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
       _LINK_FLAP_TEST_PROM="$_prom_mem_low" \
       _LINK_FLAP_TEST_INPUT="$_sysload_input" \
