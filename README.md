@@ -17,6 +17,14 @@ curl -O https://raw.githubusercontent.com/Myrigg/link-flap-detect/main/flap
 chmod +x flap
 ```
 
+### Updating
+
+```bash
+./flap --update
+```
+
+Updates via `git pull` if installed as a clone, or re-downloads the script in-place if installed standalone. On each startup, flap also checks for a newer version and prompts you to update (requires curl; skipped automatically in non-interactive and scripted contexts).
+
 ### Requirements
 
 | Dependency | Used for | Notes |

@@ -25,11 +25,14 @@
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
 #   --dut IFACE   Device-under-test interface; wizard compares it against the primary interface
 #                 to determine whether the fault is in the DUT or in this computer's network
+#   --update      Update flap to the latest version from GitHub and exit
 #
 # Environment overrides (same as flags):
 #   WINDOW_MINUTES, FLAP_THRESHOLD, IFACE_FILTER
 
 set -euo pipefail
+
+VERSION="2026.03.03"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 WINDOW_MINUTES=${WINDOW_MINUTES:-60}
@@ -60,6 +63,65 @@ usage() {
   exit 0
 }
 
+# ── Self-update ────────────────────────────────────────────────────────────────
+_GITHUB_RAW="https://raw.githubusercontent.com/Myrigg/link-flap-detect/main"
+
+# _do_update: update the script in-place.
+# Git clone installs: git pull from the repo root.
+# Standalone script installs: re-download the script over itself via curl.
+_do_update() {
+  local script_path script_dir
+  script_path="$(readlink -f "$0")"
+  script_dir="$(dirname "$script_path")"
+
+  echo -e "${BOLD}Updating flap...${RESET}"
+
+  if git -C "$script_dir" rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+    git -C "$script_dir" pull
+  else
+    if ! command -v curl &>/dev/null; then
+      echo "Error: curl is required to update the standalone script." >&2; exit 1
+    fi
+    local tmp
+    tmp=$(mktemp)
+    if curl --max-time 30 -sf "${_GITHUB_RAW}/flap" -o "$tmp"; then
+      cp "$tmp" "$script_path"
+      chmod +x "$script_path"
+      rm -f "$tmp"
+      echo -e "${GREEN}Updated successfully.${RESET}"
+    else
+      rm -f "$tmp"
+      echo "Update failed — check your internet connection." >&2; exit 1
+    fi
+  fi
+  exit 0
+}
+
+# _check_for_update: fetch the remote VERSION file and prompt if newer.
+# Skipped automatically in: non-terminal output, follow-mode children, rollback mode.
+_check_for_update() {
+  [[ ! -t 1 ]] && return 0                        # not interactive
+  [[ -n "${_FLAP_FOLLOW_CHILD:-}" ]] && return 0  # follow mode re-exec
+  [[ -n "${ROLLBACK_ID:-}" ]] && return 0          # rollback / list mode
+  command -v curl &>/dev/null || return 0          # curl unavailable
+
+  local remote_version
+  remote_version=$(curl --max-time 3 -sf "${_GITHUB_RAW}/VERSION" 2>/dev/null || true)
+  [[ -z "$remote_version" ]] && return 0  # network unavailable or slow
+
+  # YYYY.MM.DD strings compare correctly with standard lexicographic order
+  [[ "$remote_version" > "$VERSION" ]] || return 0
+
+  echo -e "${YELLOW}${BOLD}Update available:${RESET} ${remote_version}  (installed: ${VERSION})"
+  printf "  Update now? [y/N] "
+  local reply=""
+  read -r -t 15 reply 2>/dev/null || true
+  echo ""
+  if [[ "${reply,,}" == "y" ]]; then
+    _do_update
+  fi
+}
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 # Capture original args before any stripping so follow mode can re-exec intact.
 _ORIG_ARGS=("$@")
@@ -70,9 +132,10 @@ DUT_IFACE=""
 _REBUILT_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --fleet) FLEET_MODE=1 ;;
-    --dut)   DUT_IFACE="${2:-}"; shift ;;
-    *)       _REBUILT_ARGS+=("$1") ;;
+    --fleet)  FLEET_MODE=1 ;;
+    --dut)    DUT_IFACE="${2:-}"; shift ;;
+    --update) _do_update ;;
+    *)        _REBUILT_ARGS+=("$1") ;;
   esac
   shift
 done
@@ -129,6 +192,9 @@ fi
 if [[ "$FLEET_MODE" -eq 1 ]] && [[ -z "$PROM_URL" ]]; then
   echo "Error: --fleet requires -m URL (Prometheus base URL)." >&2; exit 1
 fi
+
+# ── Update check (skipped in non-interactive, follow children, rollback) ──────
+_check_for_update
 
 # ── Backup & Rollback ─────────────────────────────────────────────────────────
 
@@ -1562,7 +1628,7 @@ if [[ ${#IFACES[@]} -eq 0 ]]; then
   if [[ -n "$FOLLOW_SECONDS" ]]; then
     echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
     sleep "$FOLLOW_SECONDS"
-    exec "$0" "${_ORIG_ARGS[@]}"
+    exec env _FLAP_FOLLOW_CHILD=1 "$0" "${_ORIG_ARGS[@]}"
   fi
   exit 0
 fi
