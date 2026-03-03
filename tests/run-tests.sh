@@ -66,6 +66,8 @@ source "$TESTS_DIR/test-fault-localization.sh"
 source "$TESTS_DIR/test-webhook.sh"
 # shellcheck source=tests/test-follow-dedup.sh
 source "$TESTS_DIR/test-follow-dedup.sh"
+# shellcheck source=tests/test-json.sh
+source "$TESTS_DIR/test-json.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))
