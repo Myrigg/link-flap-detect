@@ -72,8 +72,12 @@ correlation block, and a summary with flapping count and interface names.
 Human-readable output is suppressed. JSON is serialised via python3 for
 correct escaping. Valid on both the no-events and flapping code paths.
 
-### Persistent event log
-Append all detected flap events to `~/.local/share/link-flap/events.log` with ISO 8601 timestamps. Survives terminal sessions, enabling "when did this start?" queries and long-term trend analysis without re-scanning old log files.
+### ~~Persistent event log~~ ✓ Done
+Every FLAPPING detection appends a tab-separated entry to
+`~/.local/share/link-flap/events.log` (ISO 8601 timestamp, interface, state,
+transitions count). `--events [N|all|DATE]` queries the log: default last 20,
+`all` dumps everything, a `YYYY-MM-DD` prefix filters by date. Graceful message
+when no log file exists. `EVENT_LOG` env var overrides the path for test isolation.
 
 ---
 
