@@ -721,6 +721,30 @@ run_wizard() {
   duplex=$(echo "$ethtool_out" | grep -i "Duplex:" | awk '{print $2}' | head -1 || true)
   autoneg=$(echo "$ethtool_out" | grep -i "Auto-negotiation:" | awk '{print $2}' | head -1 || true)
 
+  # SFP DOM (Digital Optical Monitoring) — silent on copper / unsupported NICs
+  local dom_out rx_power_dbm="" tx_power_dbm=""
+  dom_out=$(_wiz_cmd ethtool_m ethtool -m "$iface")
+  if [[ -n "$dom_out" ]]; then
+    rx_power_dbm=$(echo "$dom_out" \
+      | grep -i "receiver signal\|rx power" \
+      | grep -oP '[-]?[0-9]+\.[0-9]+(?= dBm)' \
+      | head -1 || true)
+    tx_power_dbm=$(echo "$dom_out" \
+      | grep -i "laser output power\|tx power" \
+      | grep -oP '[-]?[0-9]+\.[0-9]+(?= dBm)' \
+      | head -1 || true)
+  fi
+
+  # LLDP neighbour — silent if lldpctl not installed
+  local lldp_peer_name="" lldp_peer_port="" _lldp_available=0
+  if command -v lldpctl &>/dev/null; then
+    _lldp_available=1
+    local lldp_raw
+    lldp_raw=$(_wiz_cmd lldpctl lldpctl "$iface")
+    lldp_peer_name=$(echo "$lldp_raw" | awk -F'SysName:' 'NF>1{gsub(/^[ \t]+/,"",$2); print $2; exit}')
+    lldp_peer_port=$(echo "$lldp_raw" | awk -F'PortDescr:' 'NF>1{gsub(/^[ \t]+/,"",$2); print $2; exit}')
+  fi
+
   # 4. Build findings array — each entry: "LEVEL<tab>Title<tab>Description<tab>Fix"
   local -a findings=()
 
@@ -1036,7 +1060,9 @@ run_wizard() {
     "$resolv_conf_out" "$dmesg_out" \
     "${carrier_changes:-}" "${speed:-}" "${rx_crc:-}" "${ne_tx_drop:-}" \
     "${dut_carrier_changes:-}" "${dut_operstate:-}" "${dut_speed:-}" \
-    "${_tx_drop_cause:-0}"
+    "${_tx_drop_cause:-0}" \
+    "${rx_power_dbm:-}" "${tx_power_dbm:-}" \
+    "${lldp_peer_name:-}" "${lldp_peer_port:-}" "${_lldp_available:-0}"
 
   # 8. Save report (strip ANSI already done in _rpt)
   printf '%s\n' "${report_lines[@]}" > "${REPORT_DIR}/${backup_id}.txt"
@@ -1049,6 +1075,9 @@ run_wizard() {
 #       carrier_changes speed rx_crc ne_tx_drop
 #       dut_carrier_changes dut_operstate dut_speed
 #       tx_drop_cause (1 if TX drops reached CAUSE level, 0 otherwise)
+#       rx_power_dbm tx_power_dbm (SFP DOM optical power in dBm, empty if unavailable)
+#       lldp_peer_name lldp_peer_port (empty if unknown)
+#       lldp_available (1 if lldpctl present, 0 otherwise)
 run_fault_localization() {
   local iface="$1"
   local ethtool_i_out="$2"
@@ -1065,6 +1094,11 @@ run_fault_localization() {
   local dut_operstate="${13}"
   local dut_speed="${14}"
   local tx_drop_cause="${15:-0}"
+  local rx_power_dbm="${16:-}"
+  local tx_power_dbm="${17:-}"
+  local lldp_peer_name="${18:-}"
+  local lldp_peer_port="${19:-}"
+  local lldp_available="${20:-0}"
 
   local SEP="════════════════════════════════════════════════════════════"
 
@@ -1093,13 +1127,48 @@ run_fault_localization() {
     l1_status="SUSPECT"; l1_evidence+=("Severe TX packet loss (${ne_tx_drop} drops)")
   fi
 
+  # 6. SFP DOM — RX optical power (signal arriving from the remote end)
+  #    Low RX power implicates the remote SFP, fibre attenuation, or dirty connectors.
+  #    Typical thresholds: warn < -30 dBm, critical < -35 dBm
+  if [[ -n "$rx_power_dbm" ]]; then
+    if awk "BEGIN{exit !($rx_power_dbm < -35)}"; then
+      l1_status="SUSPECT"
+      l1_evidence+=("RX optical power ${rx_power_dbm} dBm — remote SFP or fibre degraded")
+    elif awk "BEGIN{exit !($rx_power_dbm < -30)}"; then
+      l1_evidence+=("RX optical power ${rx_power_dbm} dBm (marginal; monitor)")
+    fi
+  fi
+
+  # 7. SFP DOM — TX optical power (local laser health; most SFPs rated -9 dBm minimum)
+  if [[ -n "$tx_power_dbm" ]]; then
+    if awk "BEGIN{exit !($tx_power_dbm < -9)}"; then
+      l1_status="SUSPECT"
+      l1_evidence+=("TX optical power ${tx_power_dbm} dBm — local SFP laser degraded")
+    fi
+  fi
+
+  # 8. LLDP neighbour — remote device visibility
+  local lldp_note=""
+  if [[ -n "$lldp_peer_name" ]]; then
+    lldp_note="${lldp_peer_name}${lldp_peer_port:+ port $lldp_peer_port}"
+  elif [[ "$lldp_available" -eq 1 ]]; then
+    # lldpctl present but no neighbour on an up link is suspicious
+    echo "$ethtool_out" | grep -qi "Link detected: yes" && \
+      l1_evidence+=("No LLDP neighbour on an up link — remote port may be down or misconfigured")
+  fi
+
   local l1_col="$GREEN"
   [[ "$l1_status" == "SUSPECT" ]] && l1_col="$RED"
   _rpt "  Layer 1 — Physical (cable / connector / SFP)"
   _rpt "    Status   : ${l1_col}${l1_status}${RESET}"
+  [[ -n "$lldp_note" ]] && _rpt "    Remote   : ${lldp_note}"
   if [[ "${#l1_evidence[@]}" -gt 0 ]]; then
     _rpt "    Evidence : $(IFS='; '; echo "${l1_evidence[*]}")"
-    _rpt "    Next step: Replace cable; try a different switch port; swap SFP"
+    if echo "${l1_evidence[*]}" | grep -qi "remote\|LLDP"; then
+      _rpt "    Next step: Investigate remote device/port${lldp_note:+ ($lldp_note)}; check far-end SFP and fibre connectors"
+    else
+      _rpt "    Next step: Replace cable; try a different switch port; swap SFP"
+    fi
   fi
   _rpt ""
 
