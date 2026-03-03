@@ -95,3 +95,8 @@
   sections for each new feature.
 - README: updated test suite listing with all 22 test files.
 - ROADMAP: all Tier 1–3 features marked as ✓ Done with implementation summaries.
+- **README restructured for professional polish** — reduced from 934 to ~220 lines.
+  Detailed reference material moved to `docs/wizard.md`, `docs/enrichment.md`, and
+  `docs/advanced.md`. Added badges (CI, Bash version), quick-start section, navigation
+  links, logically grouped options table, and curated examples. No content was lost —
+  everything from the original README exists in either the new README or docs/.
