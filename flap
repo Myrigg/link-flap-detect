@@ -22,6 +22,7 @@
 #   -f SECONDS    Follow mode: re-run every N seconds (Ctrl-C to stop)
 #   -W URL        Webhook URL for flap/clear alerts (Slack, Discord, or generic);
 #                 saved for future runs. Fires on state changes only in follow mode.
+#   -j            JSON output — emit a single JSON object instead of human-readable text
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
@@ -60,6 +61,13 @@ _IPERF3_SERVER_FROM_FLAG=0   # set to 1 when -b is explicitly passed
 _WEBHOOK_URL_FROM_FLAG=0     # set to 1 when -W is explicitly passed
 _FLAP_INTERACTIVE_MODE=0     # set to 1 when no-arg interactive menu ran
 _INTERACTIVE_ARGS=()         # args to reconstruct for "re-run same test"
+JSON_MODE=0                  # set to 1 when -j is passed
+
+# ── JSON output accumulators ─────────────────────────────────────────────────
+# Populated throughout the script when JSON_MODE=1; serialised at exit.
+declare -a _JSON_IFACES=()           # JSON fragments per interface
+_JSON_CORRELATION=""                 # "true" or ""
+_JSON_LOG_SOURCE=""                  # journald, syslog, tshark, etc.
 VERBOSE=0
 SINCE_INPUT=""
 UNTIL_INPUT=""
@@ -404,7 +412,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
-while getopts ":w:t:i:p:m:n:b:d:r:f:W:vh" opt; do
+while getopts ":w:t:i:p:m:n:b:d:r:f:W:jvh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
@@ -416,6 +424,7 @@ while getopts ":w:t:i:p:m:n:b:d:r:f:W:vh" opt; do
     d) DIAG_IFACE="$OPTARG"     ;;
     r) ROLLBACK_ID="$OPTARG"    ;;
     f) FOLLOW_SECONDS="$OPTARG" ;;
+    j) JSON_MODE=1              ;;
     W) WEBHOOK_URL="$OPTARG"; _WEBHOOK_URL_FROM_FLAG=1 ;;
     v) VERBOSE=1                ;;
     h) usage                    ;;
@@ -2194,6 +2203,15 @@ declare -A FLAPPING_TRANSITIONS=()
 # Get unique interfaces from TMPFILE
 mapfile -t IFACES < <(awk '{print $2}' "$TMPFILE" | sort -u)
 
+# ── JSON mode: suppress human-readable output ───────────────────────────────
+# Save real stdout to fd 3 and redirect all subsequent echo/printf to /dev/null.
+# Structured data is collected into _JSON_* accumulators and emitted at exit.
+if [[ "$JSON_MODE" -eq 1 ]]; then
+  exec 3>&1
+  exec 1>/dev/null
+fi
+_JSON_LOG_SOURCE="$LOG_SOURCE"
+
 # ── Test-mode warning ─────────────────────────────────────────────────────────
 # Print an unmissable banner whenever any synthetic data hook is active, so
 # there is zero ambiguity between a test run and a real system scan.
@@ -2261,6 +2279,40 @@ if [[ ${#IFACES[@]} -eq 0 ]]; then
     sleep "$FOLLOW_SECONDS"
     exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="" "$0" "${_ORIG_ARGS[@]}"
   fi
+  if [[ "$JSON_MODE" -eq 1 ]]; then
+    exec 1>&3
+    _j_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
+    _j_since="null"
+    [[ -n "${SINCE_EPOCH:-}" ]] && _j_since="\"$(date -d "@$SINCE_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
+    _j_until="null"
+    [[ -n "${UNTIL_EPOCH:-}" ]] && _j_until="\"$(date -d "@$UNTIL_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
+    python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+json.dump(data, sys.stdout, indent=2)
+print()
+" <<EOF
+{
+  "version": "${VERSION}",
+  "timestamp": "${_j_ts}",
+  "config": {
+    "window_minutes": ${WINDOW_MINUTES},
+    "flap_threshold": ${FLAP_THRESHOLD},
+    "iface_filter": $(if [[ -n "$IFACE_FILTER" ]]; then echo "\"${IFACE_FILTER}\""; else echo "null"; fi),
+    "log_source": "${_JSON_LOG_SOURCE}",
+    "since": ${_j_since},
+    "until": ${_j_until}
+  },
+  "interfaces": [],
+  "correlation": {"detected": false},
+  "summary": {
+    "flapping_found": false,
+    "flapping_count": 0,
+    "flapping_interfaces": []
+  }
+}
+EOF
+  fi
   exit 0
 fi
 
@@ -2297,6 +2349,22 @@ for iface in "${IFACES[@]}"; do
   span=$(( last_epoch - first_epoch ))
   span_str="${span}s"
   [[ "$span" -ge 60 ]] && span_str="$(( span / 60 ))m $(( span % 60 ))s"
+
+  # ── JSON: collect per-interface data ─────────────────────────────────────
+  if [[ "$JSON_MODE" -eq 1 ]]; then
+    _j_status="active"
+    [[ "$transitions" -ge "$FLAP_THRESHOLD" ]] && _j_status="flapping"
+    _j_events=""
+    for evt in "${EVENTS[@]}"; do
+      IFS=' ' read -r _je _ji _js <<< "$evt"
+      _je_iso=$(date -d "@$_je" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null || echo "unknown")
+      [[ -n "$_j_events" ]] && _j_events+=","
+      _j_events+="{\"epoch\":${_je},\"timestamp\":\"${_je_iso}\",\"state\":\"${_js}\"}"
+    done
+    _j_first_iso=$(date -d "@$first_epoch" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null || echo "unknown")
+    _j_last_iso=$(date -d "@$last_epoch" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null || echo "unknown")
+    _JSON_IFACES+=("{\"name\":\"${iface}\",\"status\":\"${_j_status}\",\"transitions\":${transitions},\"event_count\":${count},\"first_event\":\"${_j_first_iso}\",\"last_event\":\"${_j_last_iso}\",\"span_seconds\":${span},\"events\":[${_j_events}]}")
+  fi
 
   if [[ "$transitions" -ge "$FLAP_THRESHOLD" ]]; then
     FLAPPING_FOUND=1
@@ -2364,6 +2432,7 @@ if [[ "$FLAPPING_COUNT" -ge 2 ]]; then
   }
   ' "$TMPFILE")
   if [[ "$_corr" == "yes" ]]; then
+    _JSON_CORRELATION="true"
     echo -e "  ${YELLOW}[CORRELATED]${RESET} Multiple interfaces had events in the same 10-second window."
     echo -e "  ${DIM}Possible shared cause: switch reboot, upstream link failure, power event, or broadcast storm.${RESET}"
     echo ""
@@ -2427,5 +2496,56 @@ if [[ -n "$FOLLOW_SECONDS" ]]; then
   sleep "$FOLLOW_SECONDS"
   exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="${_FLAP_NEXT_FLAPPING:-}" "$0" "${_ORIG_ARGS[@]}"
 fi
+# ── JSON output emission ─────────────────────────────────────────────────────
+if [[ "$JSON_MODE" -eq 1 ]]; then
+  exec 1>&3  # restore real stdout
+  _j_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
+  _j_ifaces_arr=""
+  for _ji in "${_JSON_IFACES[@]+"${_JSON_IFACES[@]}"}"; do
+    [[ -n "$_j_ifaces_arr" ]] && _j_ifaces_arr+=","
+    _j_ifaces_arr+="$_ji"
+  done
+  _j_flapping_arr=""
+  for _jf in "${FLAPPING_IFACES[@]+"${FLAPPING_IFACES[@]}"}"; do
+    [[ -n "$_j_flapping_arr" ]] && _j_flapping_arr+=","
+    _j_flapping_arr+="\"${_jf}\""
+  done
+  _j_corr="false"
+  [[ "$_JSON_CORRELATION" == "true" ]] && _j_corr="true"
+  _j_since="null"
+  [[ -n "${SINCE_EPOCH:-}" ]] && _j_since="\"$(date -d "@$SINCE_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
+  _j_until="null"
+  [[ -n "${UNTIL_EPOCH:-}" ]] && _j_until="\"$(date -d "@$UNTIL_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
+  python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+json.dump(data, sys.stdout, indent=2)
+print()
+" <<EOF
+{
+  "version": "${VERSION}",
+  "timestamp": "${_j_ts}",
+  "config": {
+    "window_minutes": ${WINDOW_MINUTES},
+    "flap_threshold": ${FLAP_THRESHOLD},
+    "iface_filter": $(if [[ -n "$IFACE_FILTER" ]]; then echo "\"${IFACE_FILTER}\""; else echo "null"; fi),
+    "log_source": "${_JSON_LOG_SOURCE}",
+    "since": ${_j_since},
+    "until": ${_j_until}
+  },
+  "interfaces": [${_j_ifaces_arr}],
+  "correlation": {
+    "detected": ${_j_corr}
+  },
+  "summary": {
+    "flapping_found": $(if [[ "$FLAPPING_FOUND" -eq 1 ]]; then echo "true"; else echo "false"; fi),
+    "flapping_count": ${FLAPPING_COUNT},
+    "flapping_interfaces": [${_j_flapping_arr}]
+  }
+}
+EOF
+  exit $(( FLAPPING_FOUND ))
+fi
+
 _flap_what_next "$(( FLAPPING_FOUND ))"
 exit $(( FLAPPING_FOUND ))

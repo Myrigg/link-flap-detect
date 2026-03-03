@@ -58,8 +58,13 @@ Add `-W URL` to send a JSON payload to a Slack, Discord, or generic webhook when
 ### Alert deduplication in follow mode
 Track per-interface flap state across `-f` rescans. Only report when an interface transitions from stable → flapping or flapping → stable. Currently the full report is reprinted on every interval regardless of whether anything changed.
 
-### JSON output mode
-Add `-j` flag for machine-readable output. Emits a JSON object with detected interfaces, transition counts, event timestamps, enrichment data, and wizard findings. Makes `flap` pipeable into dashboards, alerting scripts, and log aggregators.
+### ~~JSON output mode~~ ✓ Done
+`-j` flag emits a single JSON object to stdout: version, timestamp, config
+(window, threshold, source, date range), per-interface data (name, status,
+transitions, event count, span, and individual events with epoch/state), a
+correlation block, and a summary with flapping count and interface names.
+Human-readable output is suppressed. JSON is serialised via python3 for
+correct escaping. Valid on both the no-events and flapping code paths.
 
 ### Persistent event log
 Append all detected flap events to `~/.local/share/link-flap/events.log` with ISO 8601 timestamps. Survives terminal sessions, enabling "when did this start?" queries and long-term trend analysis without re-scanning old log files.
