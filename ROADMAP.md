@@ -15,7 +15,10 @@ Port (duplex mismatch), Gateway/Router (live ping), VPN (tun/tap/wg interface de
 and DNS (resolv.conf + dig). Each layer reports OK / SUSPECT / UNKNOWN. A synthesised
 VERDICT names the most likely fault layer. TX/RX drop thresholds are rate-based (>1% loss
 = CAUSE, >0.1% = WARN), grounded in Prometheus community standards and TCP performance
-research.
+research. The Physical layer check now includes SFP DOM optical power (`ethtool -m`) to
+detect weak RX signal from the remote end and degraded local TX laser, plus LLDP neighbour
+identification (`lldpctl`) to name the far-end device and port. Next-step advice is
+tailored: remote-end evidence produces a different recommendation than local cable/SFP faults.
 
 ### ~~Device Under Test (`--dut IFACE`)~~ ✓ Done
 `--dut IFACE` adds a DUT comparison block to the fault localization report. The wizard

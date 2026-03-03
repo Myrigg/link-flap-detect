@@ -35,8 +35,10 @@ Updates via `git pull` if installed as a clone, or re-downloads the script in-pl
 | `curl` | Prometheus enrichment (`-m`) | `apt install curl` |
 | `tshark` | PCAP analysis (`-p`) | `apt install tshark` — optional |
 | `iperf3` | Active bandwidth probe (`-b`) | `apt install iperf3` — optional |
+| `ethtool` | SFP DOM optical power in Layer 1 check | Pre-installed on Ubuntu; `-m` flag requires driver support |
+| `lldpctl` | LLDP neighbour identification in Layer 1 check | `apt install lldpd` — optional |
 
-`curl`, `tshark`, and `iperf3` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install.
+`curl`, `tshark`, `iperf3`, and `lldpd` are only needed for their respective optional features. Everything else is already present on a standard Ubuntu install. `ethtool` is pre-installed but SFP DOM (`-m`) requires a compatible NIC driver — it is silently skipped on copper or unsupported NICs.
 
 ## What it detects
 
@@ -466,7 +468,7 @@ After collecting interface state and raising findings, the wizard checks six lay
 
 | Layer | What is checked |
 |---|---|
-| Physical (cable / SFP) | Carrier changes, unknown speed, autoneg failures |
+| Physical (cable / SFP) | Carrier changes, unknown speed, autoneg failures, SFP DOM optical power (RX/TX dBm), LLDP neighbour |
 | NIC Driver | ethtool driver version, firmware, dmesg NIC resets |
 | Switch Port | LLDP availability, STP topology changes, duplex mismatch |
 | Gateway / Router | Live ping to default gateway and 8.8.8.8 |
@@ -485,8 +487,9 @@ Layer 3 checks involve a brief live ping and DNS query (~2–3s total).
 
   Layer 1 — Physical (cable / connector / SFP)
     Status   : SUSPECT
-    Evidence : Unknown speed (autoneg failed); 53792 carrier changes (severe)
-    Next step: Replace cable; try a different switch port; swap SFP
+    Remote   : switch1.example.com port GigabitEthernet0/5
+    Evidence : Unknown speed (autoneg failed); 53792 carrier changes (severe); RX optical power -38.5 dBm — remote SFP or fibre degraded
+    Next step: Investigate remote device/port (switch1.example.com port GigabitEthernet0/5); check far-end SFP and fibre connectors
 
   Layer 2 — NIC Driver
     Status   : OK
