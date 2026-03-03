@@ -76,6 +76,7 @@ fi
 _metrics2="$TESTDIR/metrics-143.prom"
 rm -f "$_metrics2"
 OUT=''; EXITCODE=0
+# shellcheck disable=SC2034
 OUT=$(_LINK_FLAP_TEST_INPUT="$_exp_noflap" \
       bash "$SCRIPT" -w 60 --export "$_metrics2" 2>&1) || EXITCODE=$?
 if [[ -f "$_metrics2" ]] \

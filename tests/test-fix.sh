@@ -34,11 +34,11 @@ Settings for eth0:
 	Auto-negotiation: on
 	Link detected: yes
 ETHTOOL
-cat > "$_wiz_fix/ethtool_eee" <<'EEE'
+cat > "$_wiz_fix/ethtool_eee" <<'EEE_OUT'
 EEE settings for eth0:
 	EEE status: enabled - active
 	Tx LPI: 100 (us)
-EEE
+EEE_OUT
 echo "" > "$_wiz_fix/ethtool_s"
 echo "" > "$_wiz_fix/ethtool_i"
 echo "" > "$_wiz_fix/ip_link"
