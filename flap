@@ -28,6 +28,7 @@
 #   --dut IFACE   Device-under-test interface; wizard compares it against the primary interface
 #                 to determine whether the fault is in the DUT or in this computer's network
 #   --update      Update flap to the latest version from GitHub and exit
+#   --events [N|all|DATE]  Show recent entries from the persistent event log (default: last 20)
 #   --since DATE  Scan from DATE (overrides -w). Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
 #   --until DATE  Scan up to DATE (default: now). Same format as --since.
 #                 Date-only --since defaults to 00:00:00; date-only --until defaults to 23:59:59.
@@ -53,6 +54,7 @@ DIAG_IFACE=${DIAG_IFACE:-""}
 ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
 REPORT_DIR="${REPORT_DIR:-${HOME}/.local/share/link-flap/reports}"
+EVENT_LOG="${EVENT_LOG:-${HOME}/.local/share/link-flap/events.log}"
 _CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/link-flap"
 _CONFIG_FILE="${_CONFIG_DIR}/config"
 _PROM_URL_FROM_FLAG=0        # set to 1 when -m is explicitly passed
@@ -391,6 +393,7 @@ _ORIG_ARGS=("$@")
 # Pre-parse long options (getopts does not handle --foo).
 FLEET_MODE=0
 DUT_IFACE=""
+_EVENTS_QUERY=""
 _REBUILT_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -399,6 +402,7 @@ while [[ $# -gt 0 ]]; do
     --update) _do_update ;;
     --since)  SINCE_INPUT="${2:-}"; shift ;;
     --until)  UNTIL_INPUT="${2:-}"; shift ;;
+    --events) _EVENTS_QUERY="${2:-20}"; shift ;;
     *)        _REBUILT_ARGS+=("$1") ;;
   esac
   shift
@@ -491,6 +495,23 @@ fi
 # ── Update check (skipped in non-interactive, follow children, rollback) ──────
 _check_for_update
 _interactive_menu      # no-op unless no-args + TTY + not test mode
+
+# ── Event log query (--events) ───────────────────────────────────────────────
+if [[ -n "$_EVENTS_QUERY" ]]; then
+  if [[ ! -f "$EVENT_LOG" ]]; then
+    echo "No event log found at ${EVENT_LOG}."
+    exit 0
+  fi
+  if [[ "$_EVENTS_QUERY" == "all" ]]; then
+    cat "$EVENT_LOG"
+  elif [[ "$_EVENTS_QUERY" =~ ^[0-9]+$ ]]; then
+    tail -n "$_EVENTS_QUERY" "$EVENT_LOG"
+  else
+    # Treat as a date prefix filter (e.g. "2026-03-01")
+    grep "^${_EVENTS_QUERY}" "$EVENT_LOG" || echo "No events matching '${_EVENTS_QUERY}'."
+  fi
+  exit 0
+fi
 
 # ── Backup & Rollback ─────────────────────────────────────────────────────────
 
@@ -2420,6 +2441,18 @@ if [[ -n "$WEBHOOK_URL" ]]; then
   fi
 
   _FLAP_NEXT_FLAPPING="${FLAPPING_IFACES[*]:-}"
+fi
+
+# ── Persistent event log ────────────────────────────────────────────────────
+# Append FLAPPING / CLEARED entries to the event log for historical queries.
+# Skipped in test mode unless EVENT_LOG is explicitly overridden.
+if [[ -z "${_LINK_FLAP_TEST_INPUT:-}" ]] || [[ "${EVENT_LOG}" == */test-* ]]; then
+  _el_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
+  for _el_iface in "${FLAPPING_IFACES[@]}"; do
+    _el_t="${FLAPPING_TRANSITIONS[$_el_iface]:-0}"
+    mkdir -p "$(dirname "$EVENT_LOG")"
+    printf '%s\t%s\tFLAPPING\ttransitions=%s\n' "$_el_ts" "$_el_iface" "$_el_t" >> "$EVENT_LOG"
+  done
 fi
 
 if [[ -n "$FOLLOW_SECONDS" ]]; then
