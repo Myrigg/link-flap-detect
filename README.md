@@ -61,9 +61,9 @@ Updates via `git pull` if installed as a clone, or re-downloads the script in-pl
 | `-t COUNT` | Number of transitions to consider flapping | `3` |
 | `-i IFACE` | Limit output to a specific interface | (all) |
 | `-p PCAP_FILE` | Analyse a packet capture file with tshark | (none) |
-| `-m URL` | Prometheus base URL for metric enrichment | (none) |
+| `-m URL` | Prometheus base URL for metric enrichment (saved to `~/.config/link-flap/config` for future runs) | (none) |
 | `-n URL` | node_exporter metrics URL (auto-probed at `http://localhost:9100`; pass `off` to disable) | `http://localhost:9100` |
-| `-b SERVER` | Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment | (none) |
+| `-b SERVER` | iperf3 server for 5s bandwidth+retransmit test (saved to `~/.config/link-flap/config` for future runs) | (none) |
 | `-d IFACE` | Run diagnostic wizard for IFACE | (none) |
 | `-r BACKUP_ID` | Restore config files from a saved backup | (none) |
 | `-f SECONDS` | Follow mode: re-run every N seconds until Ctrl-C | (off) |
@@ -77,6 +77,14 @@ Updates via `git pull` if installed as a clone, or re-downloads the script in-pl
 
 Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRESHOLD`, `IFACE_FILTER`.
 Command-line flags take precedence over environment variables when both are set.
+
+## Configuration
+
+`-m` and `-b` values are saved automatically to `~/.config/link-flap/config` (XDG-compliant). On the first interactive run without these flags set, flap will prompt you for them. Saved values are used silently on subsequent runs.
+
+**Precedence:** CLI flag > config file > interactive prompt > disabled
+
+Passing a flag always wins and updates the saved value for next time. To clear a saved value, edit or delete `~/.config/link-flap/config`. This file is never touched by `--update`.
 
 ## Examples
 

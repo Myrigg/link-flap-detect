@@ -65,6 +65,14 @@ Append all detected flap events to `~/.local/share/link-flap/events.log` with IS
 
 ## Tier 2 — Workflow and usability
 
+### ~~Persistent config + interactive prompts~~ ✓ Done
+`-m URL` and `-b SERVER` values are saved to `~/.config/link-flap/config` (XDG_CONFIG_HOME
+respected) on first use. On subsequent runs the saved values are loaded silently — no need
+to re-type server addresses. On the first interactive TTY run with values missing, flap
+prompts for them. CLI flags always win and are written back to config. `--update` never
+touches the config dir (it is outside the repo/script path). Test helper `run_with_config()`
+in `tests/lib.sh` redirects `XDG_CONFIG_HOME` to the temp dir so config tests are isolated.
+
 ### Auto-apply fixes
 Add `--fix` flag to the wizard. When a `[CAUSE]` finding has a known, safe, single-command fix (EEE off, power control, autoneg), prompt for confirmation and apply it immediately rather than printing a command for the user to copy. Requires root for some fixes; print a clear `sudo` escalation if not already running as root.
 
