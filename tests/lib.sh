@@ -170,6 +170,18 @@ run_fleet_test() {
         bash "$SCRIPT" -m http://fake-prom:9090 --fleet "$@" 2>&1) || EXITCODE=$?
 }
 
+# run_with_config CONFIG_CONTENT INPUT_FILE [SCRIPT_ARGS...]
+# Redirects XDG_CONFIG_HOME to $TESTDIR so config tests don't touch real ~/.config.
+run_with_config() {
+  local cfg_content="$1" input_f="$2"; shift 2
+  local cfg_dir="$TESTDIR/config/link-flap"
+  mkdir -p "$cfg_dir"
+  printf '%s\n' "$cfg_content" > "${cfg_dir}/config"
+  OUT=''; EXITCODE=0
+  OUT=$(XDG_CONFIG_HOME="$TESTDIR/config" _LINK_FLAP_TEST_INPUT="$input_f" \
+        bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
+}
+
 # run_fault_loc_test WIZARD_DIR DUT_DIR DUT_IFACE [SCRIPT_ARGS...]
 # Runs the wizard with fault localization; pass "" for unused DUT args.
 run_fault_loc_test() {

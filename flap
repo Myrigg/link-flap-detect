@@ -14,9 +14,9 @@
 #   -t COUNT      Number of transitions to consider flapping (default: 3)
 #   -i IFACE      Limit output to a specific interface (e.g. eth0, ens18)
 #   -p PCAP_FILE  Analyse a packet capture file with tshark (requires tshark)
-#   -m URL        Prometheus base URL for metric enrichment (e.g. http://localhost:9090)
+#   -m URL        Prometheus base URL (saved for future runs in ~/.config/link-flap/config)
 #   -n URL        node_exporter metrics URL (default: http://localhost:9100; 'off' to disable)
-#   -b SERVER     Run iperf3 to SERVER for 5s; show bandwidth and retransmits as enrichment
+#   -b SERVER     iperf3 server for 5s bandwidth+retransmit test (saved for future runs)
 #   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
 #   -r BACKUP_ID  Restore config files from a saved backup (use 'list' to show all backups)
 #   -f SECONDS    Follow mode: re-run every N seconds (Ctrl-C to stop)
@@ -50,6 +50,10 @@ DIAG_IFACE=${DIAG_IFACE:-""}
 ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
 REPORT_DIR="${REPORT_DIR:-${HOME}/.local/share/link-flap/reports}"
+_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/link-flap"
+_CONFIG_FILE="${_CONFIG_DIR}/config"
+_PROM_URL_FROM_FLAG=0        # set to 1 when -m is explicitly passed
+_IPERF3_SERVER_FROM_FLAG=0   # set to 1 when -b is explicitly passed
 VERBOSE=0
 SINCE_INPUT=""
 UNTIL_INPUT=""
@@ -129,6 +133,91 @@ _check_for_update() {
   fi
 }
 
+# ── Config helpers ────────────────────────────────────────────────────────────
+# _config_get KEY — print the stored value for KEY, or empty string.
+_config_get() {
+  [[ ! -f "$_CONFIG_FILE" ]] && return 0
+  grep -m1 "^${1}=" "$_CONFIG_FILE" 2>/dev/null | cut -d= -f2- || true
+}
+
+# _save_config KEY VALUE — upsert a key in the config file atomically.
+_save_config() {
+  local key="$1" value="$2"
+  [[ -z "$value" ]] && return 0
+  mkdir -p "$_CONFIG_DIR"
+  local tmpf; tmpf=$(mktemp)
+  [[ -f "$_CONFIG_FILE" ]] && grep -v "^${key}=" "$_CONFIG_FILE" > "$tmpf" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$value" >> "$tmpf"
+  mv "$tmpf" "$_CONFIG_FILE"
+}
+
+# _load_config — populate PROM_URL / IPERF3_SERVER from config (flags always win).
+_load_config() {
+  [[ "$_PROM_URL_FROM_FLAG"      -eq 0 && -z "$PROM_URL"      ]] && \
+    PROM_URL=$(_config_get "PROM_URL")
+  [[ "$_IPERF3_SERVER_FROM_FLAG" -eq 0 && -z "$IPERF3_SERVER" ]] && \
+    IPERF3_SERVER=$(_config_get "IPERF3_SERVER")
+}
+
+# ── Interactive prompts ────────────────────────────────────────────────────────
+# _prompt_prom_url — ask for Prometheus URL when missing (TTY only).
+_prompt_prom_url() {
+  [[ -t 1 ]] || return 0
+  [[ -n "${_LINK_FLAP_TEST_PROM:-}${_LINK_FLAP_TEST_PROM_ALL:-}" ]] && return 0
+  [[ -n "$PROM_URL" ]] && return 0
+  printf "Prometheus URL for enrichment (e.g. http://localhost:9090, Enter to skip): "
+  local reply=""; read -r reply 2>/dev/null || true; echo ""
+  [[ -z "$reply" ]] && return 0
+  PROM_URL="$reply"
+  _save_config "PROM_URL" "$PROM_URL"
+}
+
+# _prompt_iperf3 — offer to install iperf3 and/or ask for server address (TTY only).
+_prompt_iperf3() {
+  [[ -t 1 ]] || return 0
+  [[ -n "${_LINK_FLAP_TEST_IPERF3:-}" ]] && return 0
+
+  if ! command -v iperf3 &>/dev/null; then
+    # Only offer install if user has expressed intent (server already set from config/flag)
+    [[ -z "$IPERF3_SERVER" ]] && return 0
+    printf "iperf3 is not installed. Install it now? [y/N] "
+    local yn=""; read -r yn 2>/dev/null || true; echo ""
+    if [[ "${yn,,}" == "y" ]]; then
+      if command -v apt-get &>/dev/null; then
+        sudo apt-get install -y iperf3
+      else
+        echo "Could not auto-install iperf3 — please install it manually." >&2
+        IPERF3_SERVER=""
+        return 0
+      fi
+    else
+      IPERF3_SERVER=""   # user declined; suppress iperf3 for this run
+      return 0
+    fi
+  fi
+
+  # iperf3 is now installed; prompt for server if not yet set
+  if [[ -z "$IPERF3_SERVER" ]]; then
+    printf "iperf3 server for bandwidth test (Enter to skip): "
+    local srv=""; read -r srv 2>/dev/null || true; echo ""
+    [[ -z "$srv" ]] && return 0
+    IPERF3_SERVER="$srv"
+    _save_config "IPERF3_SERVER" "$IPERF3_SERVER"
+  fi
+}
+
+# _prompt_iperf3_run — confirm before each iperf3 run when a server is known (TTY only).
+_prompt_iperf3_run() {
+  [[ -t 1 ]] || return 0
+  [[ -n "${_LINK_FLAP_TEST_IPERF3:-}" ]] && return 0
+  [[ -n "${_FLAP_FOLLOW_CHILD:-}" ]] && return 0
+  [[ -n "$IPERF3_SERVER" ]] || return 0
+  command -v iperf3 &>/dev/null || return 0
+  printf "Run iperf3 bandwidth test to %s? [y/N] " "$IPERF3_SERVER"
+  local yn=""; read -r -t 10 yn 2>/dev/null || true; echo ""
+  [[ "${yn,,}" == "y" ]] || IPERF3_SERVER=""
+}
+
 # ── Date helpers ──────────────────────────────────────────────────────────────
 # Convert a date/datetime string to a Unix epoch.
 # Accepts "YYYY-MM-DD HH:MM:SS" or bare "YYYY-MM-DD".
@@ -166,9 +255,9 @@ while getopts ":w:t:i:p:m:n:b:d:r:f:vh" opt; do
     t) FLAP_THRESHOLD="$OPTARG" ;;
     i) IFACE_FILTER="$OPTARG"   ;;
     p) PCAP_FILE="$OPTARG"      ;;
-    m) PROM_URL="$OPTARG"       ;;
+    m) PROM_URL="$OPTARG";       _PROM_URL_FROM_FLAG=1     ;;
     n) NODE_EXPORTER_URL="$OPTARG" ;;
-    b) IPERF3_SERVER="$OPTARG"  ;;
+    b) IPERF3_SERVER="$OPTARG";  _IPERF3_SERVER_FROM_FLAG=1 ;;
     d) DIAG_IFACE="$OPTARG"     ;;
     r) ROLLBACK_ID="$OPTARG"    ;;
     f) FOLLOW_SECONDS="$OPTARG" ;;
@@ -181,6 +270,17 @@ done
 
 # When wizard mode is active, pre-filter events to the target interface
 [[ -n "$DIAG_IFACE" && -z "$IFACE_FILTER" ]] && IFACE_FILTER="$DIAG_IFACE"
+
+# ── Load + prompt for server config ──────────────────────────────────────────
+_load_config
+
+# Persist values that were explicitly passed as flags
+[[ "$_PROM_URL_FROM_FLAG"      -eq 1 ]] && _save_config "PROM_URL"      "$PROM_URL"
+[[ "$_IPERF3_SERVER_FROM_FLAG" -eq 1 ]] && _save_config "IPERF3_SERVER" "$IPERF3_SERVER"
+
+# Interactive prompts (all self-guard for TTY / test mode)
+_prompt_prom_url
+_prompt_iperf3
 
 # ── Validate numerics ─────────────────────────────────────────────────────────
 if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || \
@@ -1621,6 +1721,7 @@ fi
 
 # Probe node_exporter once; result cached for wizard and per-interface blocks below
 fetch_node_exporter || true
+_prompt_iperf3_run
 run_iperf3 || true
 
 if [[ -n "$DIAG_IFACE" ]]; then run_wizard "$DIAG_IFACE"; exit 0; fi
