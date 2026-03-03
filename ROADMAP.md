@@ -88,8 +88,12 @@ continue to work as before and take precedence over auto-discovery.
 ### Auto-apply fixes
 Add `--fix` flag to the wizard. When a `[CAUSE]` finding has a known, safe, single-command fix (EEE off, power control, autoneg), prompt for confirmation and apply it immediately rather than printing a command for the user to copy. Requires root for some fixes; print a clear `sudo` escalation if not already running as root.
 
-### Bond / LAG member awareness
-Detect when a flapping interface is a member of a bond or team (`bond0`, `team0`, `lacp*`). Cross-reference with the bond's own state and carrier changes. Currently produces per-member output that can be confusing without bond context.
+### ~~Bond / LAG member awareness~~ ✓ Done
+When a flapping interface is a bond member (`/sys/class/net/<iface>/master`),
+the `[FLAPPING]` line shows `(bond member of bond0)`. The wizard adds an `[INFO]`
+finding with bond mode and carrier changes, or escalates to `[WARN]` when the
+member's carrier changes vastly exceed the bond's — indicating the member link is
+the fault, not the overall bond. Test hook: `_LINK_FLAP_TEST_BOND_MASTERS`.
 
 ### Scheduled / cron mode
 Add `--log-file FILE` to append timestamped output to a file instead of printing to stdout, and `--quiet` to suppress all output except errors. Makes `flap` cron-safe for periodic checks: `*/15 * * * * ./flap --log-file /var/log/link-flap.log --quiet`.
