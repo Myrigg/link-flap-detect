@@ -55,8 +55,14 @@ values with inline context hints.
 ### Webhook alerts in follow mode
 Add `-W URL` to send a JSON payload to a Slack, Discord, or generic webhook when flapping is detected or clears in `-f` follow mode. Fires on state changes only — not on every poll cycle.
 
-### Alert deduplication in follow mode
-Track per-interface flap state across `-f` rescans. Only report when an interface transitions from stable → flapping or flapping → stable. Currently the full report is reprinted on every interval regardless of whether anything changed.
+### ~~Alert deduplication in follow mode~~ ✓ Done
+Per-interface flap state is tracked across `-f` rescans via `_FLAP_PREV_FLAPPING`
+(interface list) and `_FLAP_PREV_TRANSITIONS` (comma-delimited `iface=count` pairs).
+Three output modes per cycle: `[FLAPPING]` for newly-detected flaps (full enrichment
+block), `[STILL FLAPPING]` for continued flaps (compact one-liner with previous count),
+and `[CLEARED]` when a previously-flapping interface stabilises. Webhooks fire only on
+new-flap and cleared transitions. Without `-f`, deduplication is disabled — full output
+is always shown.
 
 ### JSON output mode
 Add `-j` flag for machine-readable output. Emits a JSON object with detected interfaces, transition counts, event timestamps, enrichment data, and wizard findings. Makes `flap` pipeable into dashboards, alerting scripts, and log aggregators.
