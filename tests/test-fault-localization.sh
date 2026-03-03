@@ -182,6 +182,27 @@ else
   fail "87: fault localization VPN detected — tun0 in ip link show" "exit=$EXITCODE\n$OUT"
 fi
 
+# ── 87b: VPN detected when tailscale0 in ip link show ───────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/all_links" <<'EOF'
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+3: tailscale0: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1280
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                          || ok=0
+echo "$OUT" | grep -q "tailscale0"             || ok=0
+echo "$OUT" | grep -qi "VPN\|tunnel"           || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "87b: fault localization VPN detected — tailscale0 in ip link show (exit=$EXITCODE)"
+else
+  fail "87b: fault localization VPN detected — tailscale0 in ip link show" "exit=$EXITCODE\n$OUT"
+fi
+
 # ── 88: DNS OK when resolv.conf + dig return result ──────────────────────────
 wiz_dir=$(_fl_base)
 echo "nameserver 8.8.8.8" > "$wiz_dir/resolv_conf"

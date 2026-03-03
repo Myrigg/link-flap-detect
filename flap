@@ -866,7 +866,7 @@ run_fault_localization() {
 
   # ── VPN ──────────────────────────────────────────────────────────────────
   local vpn_iface
-  vpn_iface=$(echo "$all_links_out" | grep -oP '(?<=\d: )(tun|tap|wg|vpn)\w*' | head -1 || true)
+  vpn_iface=$(echo "$all_links_out" | grep -oP '(?<=\d: )(tun|tap|wg|vpn|tailscale)\w*' | head -1 || true)
   _rpt "  VPN"
   if [[ -n "$vpn_iface" ]]; then
     local vpn_route
