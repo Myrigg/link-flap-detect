@@ -8,6 +8,27 @@ Features are grouped by priority. Items within each tier are roughly ordered by 
 
 These turn `flap` from a run-once diagnostic into something you can leave running.
 
+### ~~Fault localization — layer-by-layer fault report~~ ✓ Done
+The wizard appends a `[FAULT LOCALIZATION]` section to every diagnostic report. Six layers
+are checked: Physical (cable/SFP/carrier), NIC Driver (ethtool -i, dmesg resets), Switch
+Port (duplex mismatch), Gateway/Router (live ping), VPN (tun/tap/wg interface detection),
+and DNS (resolv.conf + dig). Each layer reports OK / SUSPECT / UNKNOWN. A synthesised
+VERDICT names the most likely fault layer. TX/RX drop thresholds are rate-based (>1% loss
+= CAUSE, >0.1% = WARN), grounded in Prometheus community standards and TCP performance
+research.
+
+### ~~Device Under Test (`--dut IFACE`)~~ ✓ Done
+`--dut IFACE` adds a DUT comparison block to the fault localization report. The wizard
+compares DUT carrier_changes, speed, and link state against the host interface. If the DUT
+is unstable while the host is stable, VERDICT names the DUT or DUT-host cable as the fault.
+Intended for developers building or testing network hardware.
+
+### ~~Self-update (`--update`) and startup version check~~ ✓ Done
+`./flap --update` updates the script in-place: `git pull` for clone installs, `curl`
+re-download for standalone installs. On each interactive startup, flap silently checks the
+`VERSION` file on GitHub (3s timeout) and prompts the user if a newer version is available.
+Skipped automatically in non-interactive contexts and follow-mode re-execs.
+
 ### ~~Historical system load correlation~~ ✓ Done
 When `-m URL` is set and flapping is detected, the tool queries Prometheus for CPU idle %,
 memory available %, and load average **at the exact time flapping began** (not current values).

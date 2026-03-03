@@ -70,6 +70,8 @@ Updates via `git pull` if installed as a clone, or re-downloads the script in-pl
 | `-v` | Verbose — show every individual up/down event | off |
 | `-h` | Show help | |
 | `--fleet` | Fleet mode: query Prometheus for flapping across all monitored hosts (requires `-m`) | off |
+| `--dut IFACE` | Compare a device-under-test interface against the primary — the wizard identifies whether the fault is in the DUT or the host | (none) |
+| `--update` | Update flap to the latest version from GitHub and exit | |
 
 Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRESHOLD`, `IFACE_FILTER`.
 Command-line flags take precedence over environment variables when both are set.
@@ -120,6 +122,17 @@ tshark -w /tmp/capture.pcap -a duration:60 -i eth0
 **Wizard + iperf3 probe together:**
 ```bash
 ./flap -d eth0 -b iperf3.example.com
+```
+
+**Wizard with device-under-test comparison (for network hardware developers):**
+```bash
+# eth0 is the host uplink; eth1 is the device being tested:
+./flap -d eth0 --dut eth1
+```
+
+**Update to the latest version:**
+```bash
+./flap --update
 ```
 
 **Run the diagnostic wizard on eth0:**
@@ -424,6 +437,91 @@ The wizard:
 7. **Prints colour-coded findings** (`[CAUSE]` / `[WARN]` / `[INFO]`) with `[FIX]` commands
 8. **Saves a text report** to `~/.local/share/link-flap/reports/`
 
+### Fault Localization
+
+Runs automatically as part of every `-d IFACE` wizard invocation — no extra flag needed.
+After collecting interface state and raising findings, the wizard checks six layers in order:
+
+| Layer | What is checked |
+|---|---|
+| Physical (cable / SFP) | Carrier changes, unknown speed, autoneg failures |
+| NIC Driver | ethtool driver version, firmware, dmesg NIC resets |
+| Switch Port | LLDP availability, STP topology changes, duplex mismatch |
+| Gateway / Router | Live ping to default gateway and 8.8.8.8 |
+| VPN | Presence of tun/tap/wg interfaces |
+| DNS | resolv.conf resolver + live DNS query |
+
+Each layer reports **OK** / **SUSPECT** / **UNKNOWN**. A **VERDICT** sentence names the
+most likely fault layer. Gateway and DNS checks are skipped if no default route is found.
+Layer 3 checks involve a brief live ping and DNS query (~2–3s total).
+
+**Example output:**
+```
+════════════════════════════════════════════════════════════
+  Fault Localization — eth0
+════════════════════════════════════════════════════════════
+
+  Layer 1 — Physical (cable / connector / SFP)
+    Status   : SUSPECT
+    Evidence : Unknown speed (autoneg failed); 53792 carrier changes (severe)
+    Next step: Replace cable; try a different switch port; swap SFP
+
+  Layer 2 — NIC Driver
+    Status   : OK
+    Driver   : e1000e  v3.8.7-NAPI  fw 3.25.0
+
+  Layer 2 — Switch Port
+    Status   : UNKNOWN
+    Note     : LLDP not available; no STP topology changes seen
+    Next step: Check switch port error counters; try a different port
+
+  Layer 3 — Gateway / Router
+    Status   : OK
+    Gateway  : 192.168.1.1  (reachable)
+    Internet : reachable (8.8.8.8)
+
+  VPN
+    Status   : Not detected
+
+  DNS
+    Status   : OK
+    Resolver : 8.8.8.8  (resolved google.com)
+
+  ──────────────────────────────────────────────────────────
+  VERDICT: Fault is most likely in the PHYSICAL LAYER
+           (cable, SFP, or switch port).
+  ──────────────────────────────────────────────────────────
+```
+
+### Device Under Test (`--dut IFACE`)
+
+Intended for developers testing network hardware (NICs, adapters, embedded devices).
+Pass `--dut IFACE` alongside `-d` to add a **DUT comparison block** to the fault
+localization report:
+
+```bash
+# eth0 is the host uplink; eth1 is the device being tested:
+./flap -d eth0 --dut eth1
+```
+
+The wizard compares DUT vs. host across carrier_changes, speed, and link state. If the DUT
+is unstable while the host uplink is stable, VERDICT identifies the DUT or DUT-host cable
+as the fault rather than anything upstream.
+
+**Example DUT block:**
+```
+  DUT Interface (eth1 — device under test)
+    Carrier changes: 5000  [SEVERE]   vs host eth0: 2  [normal]
+    Speed          : Unknown!          vs host eth0: 1000Mb/s
+    Link state     : unknown           vs host eth0: up
+
+  ──────────────────────────────────────────────────────────
+  VERDICT: Fault is likely in the DUT or DUT-host cable.
+           Host uplink (eth0) is stable — the issue is not
+           upstream of this computer.
+  ──────────────────────────────────────────────────────────
+```
+
 ### Wizard findings reference
 
 | Condition | Level | Finding |
@@ -431,11 +529,11 @@ The wizard:
 | `carrier_changes` > 500 | `[CAUSE]` | Severe carrier instability |
 | `carrier_changes` > 20 | `[WARN]` | High carrier changes since boot |
 | Speed = `Unknown!` | `[CAUSE]` | Link speed unreadable — auto-negotiation failure |
-| TX drops > 5000 | `[CAUSE]` | Severe TX drop count |
-| TX drops > 100 | `[WARN]` | Elevated TX drop count |
-| RX drops > 5000 | `[CAUSE]` | Severe RX drop count |
-| RX drops > 100 | `[WARN]` | Elevated RX drop count |
-| ≥ 2 of: Unknown speed + carrier > 500 + TX drops > 1000 | `[CAUSE]` | Physical layer failure signature |
+| TX drop rate > 1% of total TX packets | `[CAUSE]` | Severe TX packet loss |
+| TX drop rate > 0.1% of total TX packets | `[WARN]` | Elevated TX packet loss |
+| RX drop rate > 1% of total RX packets | `[CAUSE]` | Severe RX packet loss |
+| RX drop rate > 0.1% of total RX packets | `[WARN]` | Elevated RX packet loss |
+| ≥ 2 of: Unknown speed + carrier > 500 + TX packet loss at CAUSE level | `[CAUSE]` | Physical layer failure signature |
 | EEE enabled | `[CAUSE]` | Energy-Efficient Ethernet enabled |
 | `power/control` = auto | `[CAUSE]` | NIC power management enabled |
 | RX CRC errors > 0 | `[CAUSE]` | RX CRC errors detected |
@@ -446,6 +544,12 @@ The wizard:
 | NIC reset/reinit in dmesg | `[WARN]` | NIC reset/reinit events |
 | RX/TX errors > 0 | `[WARN]` | RX/TX errors (node_exporter) |
 | Memory < 10% at flap time (`-m`) | `[WARN]` | Low memory at flap time |
+
+> Drop thresholds are **rate-based** when node_exporter provides
+> `node_network_transmit_packets_total` / `node_network_receive_packets_total`
+> (loss as a percentage of total traffic since boot). Absolute-count fallbacks
+> (> 5000 / > 100) are used only when packet totals are unavailable, with a note
+> in the finding.
 
 The Interface State section also annotates raw values with context hints:
 
@@ -525,4 +629,5 @@ bash tests/test-live-system.sh    # live journald / syslog / sysfs reads
 bash tests/test-fleet.sh              # --fleet Prometheus fleet scan
 bash tests/test-sysload.sh            # historical system load correlation
 bash tests/test-wizard-enrichment.sh  # wizard severity tiers and synthesis
+bash tests/test-fault-localization.sh  # fault localization, layer analysis, --dut
 ```
