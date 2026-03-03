@@ -3,7 +3,7 @@
 # Automated tests: core flap detection — log parsing, thresholds, interface
 # filtering, pattern matching, timestamp handling, and flag validation.
 #
-# Tests covered: 1–22, 51–53, 59, 63–65
+# Tests covered: 1–22, 51–53, 59, 63–70
 #
 # All input is synthetic. No journald, syslog, sysfs, or ethtool access.
 # Safe to run in CI, containers, or any machine — root not required.
@@ -455,4 +455,74 @@ if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -qE "No link state events found|N
   pass "65: -i nonexistent_iface → exit 0 + no-events message"
 else
   fail "65: -i nonexistent_iface → exit 0 + no-events message" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── --since / --until date range tests ───────────────────────────────────────
+# Log has 5 events spanning 2026-02-27 12:00 to 15:00.
+# Events at 14:00/14:30/14:45/15:00 are inside range 13:30–23:59.
+# Event at 12:00 is before range and must be filtered out.
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<'EOF'
+2026-02-27T12:00:00+0000 host kernel: eno6: NIC Link is Down
+2026-02-27T14:00:00+0000 host kernel: eno6: NIC Link is Up 1000 Mbps
+2026-02-27T14:30:00+0000 host kernel: eno6: NIC Link is Down
+2026-02-27T14:45:00+0000 host kernel: eno6: NIC Link is Up 1000 Mbps
+2026-02-27T15:00:00+0000 host kernel: eno6: NIC Link is Down
+EOF
+
+# 66. --since datetime + --until datetime: only in-range events flap; window line shows dates
+OUT=''; EXITCODE=0
+run "$t" -i eno6 -t 3 --since "2026-02-27 13:30:00" --until "2026-02-27 23:59:59"
+ok=1
+[[ $EXITCODE -eq 1 ]] || ok=0   # flapping found → exit 1
+echo "$OUT" | grep -q "FLAPPING"          || ok=0
+echo "$OUT" | grep -q "2026-02-27"        || ok=0   # date range shown in header
+echo "$OUT" | grep -qv "12:00"            || ok=0   # 12:00 event filtered out
+if [[ $ok -eq 1 ]]; then
+  pass "66: --since datetime + --until datetime filters events to range (exit=$EXITCODE)"
+else
+  fail "66: --since datetime + --until datetime filters events to range" "exit=$EXITCODE\n$OUT"
+fi
+
+# 67. --since date-only (no time): 2026-02-27 → defaults to 00:00:00; all day's events included
+OUT=''; EXITCODE=0
+run "$t" -i eno6 -t 3 --since "2026-02-27"
+ok=1
+[[ $EXITCODE -eq 1 ]] || ok=0   # flapping found
+echo "$OUT" | grep -q "FLAPPING"   || ok=0
+echo "$OUT" | grep -q "2026-02-27" || ok=0
+if [[ $ok -eq 1 ]]; then
+  pass "67: --since date-only (no time) accepted and produces results (exit=$EXITCODE)"
+else
+  fail "67: --since date-only (no time) accepted and produces results" "exit=$EXITCODE\n$OUT"
+fi
+
+# 68. --until date-only: --until 2026-02-27 → defaults to 23:59:59
+OUT=''; EXITCODE=0
+run "$t" -i eno6 -t 3 --since "2026-02-27" --until "2026-02-27"
+ok=1
+[[ $EXITCODE -eq 1 ]] || ok=0
+echo "$OUT" | grep -q "FLAPPING" || ok=0
+if [[ $ok -eq 1 ]]; then
+  pass "68: --until date-only (no time) accepted (exit=$EXITCODE)"
+else
+  fail "68: --until date-only (no time) accepted" "exit=$EXITCODE\n$OUT"
+fi
+
+# 69. --until before --since → exit 1 + error message
+OUT=''; EXITCODE=0
+run /dev/null --since "2026-02-28" --until "2026-02-27"
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "until.*after\|after.*since\|must be after"; then
+  pass "69: --until before --since → exit 1 + error message (exit=$EXITCODE)"
+else
+  fail "69: --until before --since → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+fi
+
+# 70. --since with invalid date string → exit 1 + error message
+OUT=''; EXITCODE=0
+run /dev/null --since "not-a-date"
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "cannot parse\|parse"; then
+  pass "70: --since invalid date → exit 1 + error message (exit=$EXITCODE)"
+else
+  fail "70: --since invalid date → exit 1 + error message" "exit=$EXITCODE\n$OUT"
 fi

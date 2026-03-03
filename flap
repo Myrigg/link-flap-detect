@@ -26,6 +26,9 @@
 #   --dut IFACE   Device-under-test interface; wizard compares it against the primary interface
 #                 to determine whether the fault is in the DUT or in this computer's network
 #   --update      Update flap to the latest version from GitHub and exit
+#   --since DATE  Scan from DATE (overrides -w). Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
+#   --until DATE  Scan up to DATE (default: now). Same format as --since.
+#                 Date-only --since defaults to 00:00:00; date-only --until defaults to 23:59:59.
 #
 # Environment overrides (same as flags):
 #   WINDOW_MINUTES, FLAP_THRESHOLD, IFACE_FILTER
@@ -48,6 +51,10 @@ ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
 REPORT_DIR="${REPORT_DIR:-${HOME}/.local/share/link-flap/reports}"
 VERBOSE=0
+SINCE_INPUT=""
+UNTIL_INPUT=""
+SINCE_EPOCH=""
+UNTIL_EPOCH=""
 
 # ── Colours (disabled when not a terminal) ────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -122,6 +129,17 @@ _check_for_update() {
   fi
 }
 
+# ── Date helpers ──────────────────────────────────────────────────────────────
+# Convert a date/datetime string to a Unix epoch.
+# Accepts "YYYY-MM-DD HH:MM:SS" or bare "YYYY-MM-DD".
+# For bare dates, default_time is appended ("00:00:00" for --since, "23:59:59" for --until).
+# Returns empty string on parse failure.
+_to_epoch() {
+  local input="$1" default_time="${2:-00:00:00}"
+  [[ "$input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && input="${input} ${default_time}"
+  date -d "$input" +%s 2>/dev/null || echo ""
+}
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 # Capture original args before any stripping so follow mode can re-exec intact.
 _ORIG_ARGS=("$@")
@@ -135,6 +153,8 @@ while [[ $# -gt 0 ]]; do
     --fleet)  FLEET_MODE=1 ;;
     --dut)    DUT_IFACE="${2:-}"; shift ;;
     --update) _do_update ;;
+    --since)  SINCE_INPUT="${2:-}"; shift ;;
+    --until)  UNTIL_INPUT="${2:-}"; shift ;;
     *)        _REBUILT_ARGS+=("$1") ;;
   esac
   shift
@@ -191,6 +211,22 @@ if [[ -n "$NODE_EXPORTER_URL" ]] && \
 fi
 if [[ "$FLEET_MODE" -eq 1 ]] && [[ -z "$PROM_URL" ]]; then
   echo "Error: --fleet requires -m URL (Prometheus base URL)." >&2; exit 1
+fi
+if [[ -n "$SINCE_INPUT" ]]; then
+  SINCE_EPOCH=$(_to_epoch "$SINCE_INPUT" "00:00:00")
+  [[ -z "$SINCE_EPOCH" ]] && \
+    echo "Error: --since: cannot parse '$SINCE_INPUT' (use YYYY-MM-DD or 'YYYY-MM-DD HH:MM:SS')." >&2 && exit 1
+fi
+if [[ -n "$UNTIL_INPUT" ]]; then
+  UNTIL_EPOCH=$(_to_epoch "$UNTIL_INPUT" "23:59:59")
+  [[ -z "$UNTIL_EPOCH" ]] && \
+    echo "Error: --until: cannot parse '$UNTIL_INPUT' (use YYYY-MM-DD or 'YYYY-MM-DD HH:MM:SS')." >&2 && exit 1
+fi
+if [[ -n "$SINCE_EPOCH" && -n "$UNTIL_EPOCH" ]] && [[ "$UNTIL_EPOCH" -le "$SINCE_EPOCH" ]]; then
+  echo "Error: --until must be after --since." >&2; exit 1
+fi
+if [[ "$FLEET_MODE" -eq 1 && -n "$SINCE_EPOCH" ]]; then
+  echo "Error: --since/--until are not supported with --fleet." >&2; exit 1
 fi
 
 # ── Update check (skipped in non-interactive, follow children, rollback) ──────
@@ -981,7 +1017,15 @@ SINCE_ARG="${WINDOW_MINUTES} minutes ago"
 collect_from_journald() {
   # journalctl --output=short-iso gives lines like:
   #   2024-11-01T14:23:05+0000 hostname kernel: eth0: NIC Link is Down
-  journalctl --no-pager --output=short-iso --since="$SINCE_ARG" 2>/dev/null
+  local -a jctl_args=(--no-pager --output=short-iso)
+  if [[ -n "$SINCE_EPOCH" ]]; then
+    jctl_args+=("--since=$(date -d "@$SINCE_EPOCH" "+%Y-%m-%d %H:%M:%S")")
+  else
+    jctl_args+=("--since=$SINCE_ARG")
+  fi
+  [[ -n "$UNTIL_EPOCH" ]] && \
+    jctl_args+=("--until=$(date -d "@$UNTIL_EPOCH" "+%Y-%m-%d %H:%M:%S")")
+  journalctl "${jctl_args[@]}" 2>/dev/null
 }
 
 collect_from_syslog() {
@@ -989,9 +1033,14 @@ collect_from_syslog() {
   # syslog/kern.log lines: "Nov  1 14:23:05 hostname kernel: eth0: NIC Link is Down"
   # We only have current-year timestamps — good enough for flap detection
   if [[ -r "$logfile" ]]; then
-    # Filter roughly by recency using the last N lines proportional to window
-    local lines=$(( WINDOW_MINUTES * 200 ))   # ~200 log lines per minute — generous
-    tail -n "$lines" "$logfile"
+    if [[ -n "$SINCE_EPOCH" ]]; then
+      # Date range specified — read the whole file; the epoch filter handles trimming
+      cat "$logfile"
+    else
+      # Filter roughly by recency using the last N lines proportional to window
+      local lines=$(( WINDOW_MINUTES * 200 ))   # ~200 log lines per minute — generous
+      tail -n "$lines" "$logfile"
+    fi
   fi
 }
 
@@ -1557,6 +1606,14 @@ if [[ "$FLEET_MODE" -eq 0 ]]; then
 
   # Remove duplicate lines (same epoch + iface + state from multiple sources)
   sort -u "$TMPFILE" -o "$TMPFILE"
+
+  # Apply --since / --until epoch filter when a date range is specified
+  if [[ -n "$SINCE_EPOCH" || -n "$UNTIL_EPOCH" ]]; then
+    _RANGE_NOW=$(date +%s)
+    awk -v s="${SINCE_EPOCH:-0}" -v u="${UNTIL_EPOCH:-$_RANGE_NOW}" \
+      '$1+0 >= s+0 && $1+0 <= u+0' "$TMPFILE" > "${TMPFILE}.range"
+    mv "${TMPFILE}.range" "$TMPFILE"
+  fi
 fi
 
 # ── Step 3: Analyse for flapping ─────────────────────────────────────────────
@@ -1607,7 +1664,13 @@ if [[ "$FLEET_MODE" -eq 1 ]]; then
 else
   echo -e "${BOLD}Link Flap Detector${RESET} — source: ${LOG_SOURCE}"
 fi
-echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} transitions"
+if [[ -n "$SINCE_EPOCH" ]]; then
+  _since_disp=$(date -d "@$SINCE_EPOCH" "+%Y-%m-%d %H:%M:%S")
+  _until_disp=$(date -d "@${UNTIL_EPOCH:-$(date +%s)}" "+%Y-%m-%d %H:%M:%S")
+  echo -e "Window: ${_since_disp} → ${_until_disp}  |  Flap threshold: ${FLAP_THRESHOLD} transitions"
+else
+  echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} transitions"
+fi
 [[ -n "$IFACE_FILTER" ]] && echo -e "Interface filter: ${CYAN}${IFACE_FILTER}${RESET}"
 [[ -n "$PROM_URL" ]] && echo -e "Prometheus: ${CYAN}${PROM_URL}${RESET}"
 [[ -n "$_NE_METRICS_CACHE" ]] && echo -e "node_exporter: ${CYAN}${NODE_EXPORTER_URL}${RESET}"
