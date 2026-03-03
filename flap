@@ -366,6 +366,10 @@ run_wizard() {
   }
 
   _rpt ""
+  if [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+    _rpt "${YELLOW}${BOLD}  !! SYNTHETIC TEST DATA — wizard sysfs/commands are mocked, not real hardware !!${RESET}"
+    _rpt ""
+  fi
   _rpt "${BOLD}${SEP}${RESET}"
   _rpt "${BOLD}  Diagnostic Report — ${iface}${RESET}"
   _rpt "  Generated : ${ts_now}"
@@ -859,6 +863,30 @@ FLAPPING_IFACES=()
 
 # Get unique interfaces from TMPFILE
 mapfile -t IFACES < <(awk '{print $2}' "$TMPFILE" | sort -u)
+
+# ── Test-mode warning ─────────────────────────────────────────────────────────
+# Print an unmissable banner whenever any synthetic data hook is active, so
+# there is zero ambiguity between a test run and a real system scan.
+_TEST_ACTIVE=0
+[[ -n "${_LINK_FLAP_TEST_INPUT:-}"         ]] && _TEST_ACTIVE=1
+[[ -n "${_LINK_FLAP_TEST_TSHARK:-}"        ]] && _TEST_ACTIVE=1
+[[ -n "${_LINK_FLAP_TEST_PROM:-}"          ]] && _TEST_ACTIVE=1
+[[ -n "${_LINK_FLAP_TEST_NODE_EXPORTER:-}" ]] && _TEST_ACTIVE=1
+[[ -n "${_LINK_FLAP_TEST_IPERF3:-}"        ]] && _TEST_ACTIVE=1
+[[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}"    ]] && _TEST_ACTIVE=1
+
+if [[ $_TEST_ACTIVE -eq 1 ]]; then
+  echo ""
+  echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════════╗${RESET}"
+  echo -e "${YELLOW}${BOLD}║  WARNING: SYNTHETIC TEST DATA — NOT REAL SYSTEM DATA ║${RESET}"
+  echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════════╝${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_INPUT:-}"         ]] && echo -e "${YELLOW}  Logs    : synthetic file (not journald/syslog)${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_TSHARK:-}"        ]] && echo -e "${YELLOW}  tshark  : synthetic packet data (not a real pcap)${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_PROM:-}"          ]] && echo -e "${YELLOW}  Prom    : canned API response (not a real Prometheus)${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_NODE_EXPORTER:-}" ]] && echo -e "${YELLOW}  NE      : canned metrics (not a real node_exporter)${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_IPERF3:-}"        ]] && echo -e "${YELLOW}  iperf3  : canned JSON (not a real iperf3 run)${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}"    ]] && echo -e "${YELLOW}  Wizard  : mocked sysfs/ethtool (not real hardware)${RESET}"
+fi
 
 echo ""
 echo -e "${BOLD}Link Flap Detector${RESET} — source: ${LOG_SOURCE}"
