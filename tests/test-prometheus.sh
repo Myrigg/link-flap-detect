@@ -5,7 +5,7 @@
 # available, and correctly suppresses it for synthetic (stp-*/lacp-*) interfaces
 # or when no data is returned.
 #
-# Tests covered: 29–31, 62
+# Tests covered: 29–31, 62–63
 #
 # Prometheus API calls are mocked via _LINK_FLAP_TEST_PROM. No real Prometheus
 # server needed. Safe to run in CI, containers, or any machine.
@@ -89,4 +89,23 @@ if [[ $EXITCODE -eq 1 ]] \
   pass "62: Prometheus unreachable → dim 'returned no data' note in output"
 else
   fail "62: Prometheus unreachable → dim 'returned no data' note in output" "exit=$EXITCODE\n$OUT"
+fi
+
+# 63. Prometheus reachable but empty result → "no network metrics found" (not "verify connectivity")
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+run_with_prom "$t" "$PROM_EMPTY" -w 60 -t 3 -m http://prom:9090
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | grep -q "\[FLAPPING\]" \
+   && echo "$OUT" | grep -qi "no network metrics found" \
+   && ! echo "$OUT" | grep -q "verify connectivity"; then
+  pass "63: Prometheus connected, empty result → 'no network metrics found' (not 'verify connectivity')"
+else
+  fail "63: Prometheus connected, empty result → 'no network metrics found' (not 'verify connectivity')" "exit=$EXITCODE\n$OUT"
 fi

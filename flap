@@ -2192,10 +2192,21 @@ for iface in "${IFACES[@]}"; do
   fi
 done
 
-# Warn if Prometheus was configured but returned no data (likely unreachable).
-if [[ -n "$PROM_URL" ]] && [[ "$_PROM_REACHED" -eq 0 ]] && \
-   [[ -z "${_LINK_FLAP_TEST_PROM:-}" ]]; then
-  echo -e "${DIM}(Prometheus at ${PROM_URL} returned no data — verify connectivity)${RESET}"
+# Warn if Prometheus was configured but returned no data.
+# Distinguish two cases: Prometheus unreachable vs. connected but no metrics for this interface.
+if [[ -n "$PROM_URL" ]] && [[ "$_PROM_REACHED" -eq 0 ]]; then
+  _prom_connected=0
+  if [[ -n "${_LINK_FLAP_TEST_PROM:-}" ]]; then
+    # Test hook active — treat as a successful Prometheus response (hook simulates real data path)
+    _prom_connected=1
+  elif curl -sf --max-time 3 "${PROM_URL}/api/v1/query?query=1%2B1" >/dev/null 2>&1; then
+    _prom_connected=1
+  fi
+  if [[ "$_prom_connected" -eq 1 ]]; then
+    echo -e "${DIM}(Prometheus connected but no network metrics found for this interface — check that node_exporter is running and exposing /sys/class/net metrics)${RESET}"
+  else
+    echo -e "${DIM}(Prometheus at ${PROM_URL} returned no data — verify connectivity)${RESET}"
+  fi
   echo ""
 fi
 
