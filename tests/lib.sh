@@ -169,3 +169,18 @@ run_fleet_test() {
   OUT=$(_LINK_FLAP_TEST_PROM_ALL="$prom_all" \
         bash "$SCRIPT" -m http://fake-prom:9090 --fleet "$@" 2>&1) || EXITCODE=$?
 }
+
+# run_fault_loc_test WIZARD_DIR DUT_DIR DUT_IFACE [SCRIPT_ARGS...]
+# Runs the wizard with fault localization; pass "" for unused DUT args.
+run_fault_loc_test() {
+  local wiz_dir="$1" dut_dir="${2:-}" dut_iface="${3:-}"; shift 3
+  OUT=''; EXITCODE=0
+  local _extra_env=()
+  [[ -n "$dut_dir" ]] && _extra_env+=("_LINK_FLAP_TEST_DUT_DIR=$dut_dir")
+  local _extra_args=()
+  [[ -n "$dut_iface" ]] && _extra_args+=(--dut "$dut_iface")
+  OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+        _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
+        env "${_extra_env[@]+"${_extra_env[@]}"}" \
+        bash "$SCRIPT" -d eth0 "${_extra_args[@]+"${_extra_args[@]}"}" "$@" 2>&1) || EXITCODE=$?
+}

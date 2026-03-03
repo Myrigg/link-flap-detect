@@ -23,6 +23,8 @@
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
+#   --dut IFACE   Device-under-test interface; wizard compares it against the primary interface
+#                 to determine whether the fault is in the DUT or in this computer's network
 #
 # Environment overrides (same as flags):
 #   WINDOW_MINUTES, FLAP_THRESHOLD, IFACE_FILTER
@@ -64,13 +66,15 @@ _ORIG_ARGS=("$@")
 
 # Pre-parse long options (getopts does not handle --foo).
 FLEET_MODE=0
+DUT_IFACE=""
 _REBUILT_ARGS=()
-for _arg in "$@"; do
-  if [[ "$_arg" == "--fleet" ]]; then
-    FLEET_MODE=1
-  else
-    _REBUILT_ARGS+=("$_arg")
-  fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fleet) FLEET_MODE=1 ;;
+    --dut)   DUT_IFACE="${2:-}"; shift ;;
+    *)       _REBUILT_ARGS+=("$1") ;;
+  esac
+  shift
 done
 set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
 while getopts ":w:t:i:p:m:n:b:d:r:f:vh" opt; do
@@ -234,6 +238,25 @@ _wiz_cmd() {
   fi
 }
 
+# Helpers for DUT interface sysfs/command reads (separate mock dir for tests).
+_wiz_read_dut() {
+  local path="$1"
+  if [[ -n "${_LINK_FLAP_TEST_DUT_DIR:-}" ]]; then
+    cat "${_LINK_FLAP_TEST_DUT_DIR}/$(basename "$path")" 2>/dev/null || echo ""
+  else
+    cat "$path" 2>/dev/null || echo ""
+  fi
+}
+
+_wiz_cmd_dut() {
+  local key="$1"; shift
+  if [[ -n "${_LINK_FLAP_TEST_DUT_DIR:-}" ]]; then
+    cat "${_LINK_FLAP_TEST_DUT_DIR}/${key}" 2>/dev/null || echo ""
+  else
+    "$@" 2>/dev/null || echo ""
+  fi
+}
+
 run_wizard() {
   local iface="$1"
   mkdir -p "$BACKUP_DIR" "$REPORT_DIR"
@@ -263,13 +286,33 @@ run_wizard() {
   dmesg_raw=$(_wiz_cmd dmesg dmesg)
   dmesg_out=$(echo "$dmesg_raw" | grep -i "$iface" | tail -30 2>/dev/null || true)
 
+  # Fault localization data
+  local ethtool_i_out ip_addr_out ip_route_out all_links_out resolv_conf_out
+  ethtool_i_out=$(_wiz_cmd ethtool_i ethtool -i "$iface")
+  ip_addr_out=$(_wiz_cmd ip_addr ip addr show "$iface")
+  ip_route_out=$(_wiz_cmd ip_route ip route show)
+  all_links_out=$(_wiz_cmd all_links ip link show)
+  resolv_conf_out=$(_wiz_cmd resolv_conf cat /etc/resolv.conf)
+
+  # DUT interface data (only when --dut is set)
+  local dut_carrier_changes="" dut_operstate="" dut_speed=""
+  if [[ -n "$DUT_IFACE" ]]; then
+    dut_carrier_changes=$(_wiz_read_dut "/sys/class/net/${DUT_IFACE}/carrier_changes")
+    dut_operstate=$(_wiz_read_dut "/sys/class/net/${DUT_IFACE}/operstate")
+    local dut_ethtool_out
+    dut_ethtool_out=$(_wiz_cmd_dut dut_ethtool ethtool "$DUT_IFACE")
+    dut_speed=$(echo "$dut_ethtool_out" | grep -i "Speed:" | awk '{print $2}' | head -1 || true)
+  fi
+
   # node_exporter metrics — uses _NE_METRICS_CACHE (fetch_node_exporter called at Step 3 entry)
-  local ne_up ne_rx_err ne_tx_err ne_rx_drop ne_tx_drop
+  local ne_up ne_rx_err ne_tx_err ne_rx_drop ne_tx_drop ne_tx_packets ne_rx_packets
   ne_up=$(_ne_val node_network_up "$iface")
   ne_rx_err=$(_ne_val node_network_receive_errs_total "$iface")
   ne_tx_err=$(_ne_val node_network_transmit_errs_total "$iface")
   ne_rx_drop=$(_ne_val node_network_receive_drop_total "$iface")
   ne_tx_drop=$(_ne_val node_network_transmit_drop_total "$iface")
+  ne_tx_packets=$(_ne_val node_network_transmit_packets_total "$iface")
+  ne_rx_packets=$(_ne_val node_network_receive_packets_total "$iface")
 
   # iperf3 active probe — uses _IPERF3_RESULT_CACHE (run_iperf3 called at Step 3 entry)
   local iperf3_bps iperf3_retransmits
@@ -284,10 +327,13 @@ run_wizard() {
   # 4. Build findings array — each entry: "LEVEL<tab>Title<tab>Description<tab>Fix"
   local -a findings=()
 
-  # High carrier changes (> 20 since boot)
-  if [[ -n "$carrier_changes" ]] && [[ "$carrier_changes" =~ ^[0-9]+$ ]] && \
-     [[ "$carrier_changes" -gt 20 ]]; then
-    findings+=("WARN"$'\t'"High carrier changes since boot"$'\t'"${carrier_changes} state changes since boot — suggests persistent instability"$'\t'"Check cable, SFP module, or switch port")
+  # Carrier instability — two severity tiers
+  if [[ -n "$carrier_changes" ]] && [[ "$carrier_changes" =~ ^[0-9]+$ ]]; then
+    if [[ "$carrier_changes" -gt 500 ]]; then
+      findings+=("CAUSE"$'\t'"Severe carrier instability"$'\t'"${carrier_changes} link state transitions since boot (cumulative). A healthy, stable link has 1–5 total changes across its entire lifetime (initial autoneg + planned reboots). 500+ transitions indicates sustained physical instability: faulty cable, degraded SFP, switch port fault, or NIC hardware failure."$'\t'"Replace cable or SFP; try a different switch port; run: ethtool -d ${iface}")
+    elif [[ "$carrier_changes" -gt 20 ]]; then
+      findings+=("WARN"$'\t'"Elevated carrier changes since boot"$'\t'"${carrier_changes} link state changes since boot (cumulative). A healthy link typically has 1–5 total changes. More than 20 suggests intermittent instability."$'\t'"Check cable, SFP module, or switch port")
+    fi
   fi
 
   # EEE enabled
@@ -310,6 +356,11 @@ run_wizard() {
   # Half-duplex
   if echo "$ethtool_out" | grep -qi "Duplex: Half"; then
     findings+=("WARN"$'\t'"Half-duplex detected"$'\t'"Half-duplex causes collisions and link instability at high load"$'\t'"ethtool -s ${iface} speed 1000 duplex full autoneg off")
+  fi
+
+  # Speed/duplex unreadable — autoneg failure or link down
+  if [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]]; then
+    findings+=("CAUSE"$'\t'"Link speed unreadable — auto-negotiation failure"$'\t'"The NIC reports unknown speed and duplex, meaning it cannot determine link parameters. This usually means the link is physically down, auto-negotiation has completely failed, or the NIC/driver has faulted. Combined with high carrier changes, this is a strong indicator of physical layer failure."$'\t'"Try forcing speed: ethtool -s ${iface} speed 1000 duplex full autoneg off  or check cable/SFP/switch port autoneg settings")
   fi
 
   # No physical link
@@ -337,6 +388,75 @@ run_wizard() {
     findings+=("WARN"$'\t'"TX errors (node_exporter)"$'\t'"${ne_tx_err} TX errors seen — possible congestion or hardware fault"$'\t'"Check switch port; run: ethtool -S ${iface} | grep -i error")
   fi
 
+  # TX drops — rate-based when packet totals available (>1% = CAUSE, >0.1% = WARN per
+  # Prometheus community standard and TCP performance research showing >0.1% loss degrades
+  # throughput). Falls back to absolute counts only when NE packet data is unavailable.
+  local _tx_drop_cause=0
+  if [[ -n "$ne_tx_drop" ]] && [[ "$ne_tx_drop" =~ ^[0-9]+$ ]] && [[ "$ne_tx_drop" -gt 0 ]]; then
+    local _tx_drop_fired=0
+    if [[ -n "$ne_tx_packets" && "$ne_tx_packets" =~ ^[0-9]+$ && "$ne_tx_packets" -gt 0 ]]; then
+      local _tx_drop_rate_pct _tx_drop_rate_int
+      _tx_drop_rate_pct=$(awk -v d="$ne_tx_drop" -v p="$ne_tx_packets" \
+        'BEGIN{printf "%.4f", d/p*100}')
+      _tx_drop_rate_int=$(awk -v v="$_tx_drop_rate_pct" 'BEGIN{printf "%d", v*1000}')
+      if [[ "$_tx_drop_rate_int" -gt 1000 ]]; then   # > 1.000%
+        findings+=("CAUSE"$'\t'"Severe TX packet loss"$'\t'"${ne_tx_drop} TX drops out of ${ne_tx_packets} packets (${_tx_drop_rate_pct}% loss rate since boot). Loss >1% significantly degrades TCP throughput and indicates ring buffer exhaustion, driver overload, or physical layer instability."$'\t'"Check: ethtool -g ${iface} for ring buffer size; ethtool -S ${iface} | grep -i drop")
+        _tx_drop_cause=1; _tx_drop_fired=1
+      elif [[ "$_tx_drop_rate_int" -gt 100 ]]; then  # > 0.100%
+        findings+=("WARN"$'\t'"Elevated TX packet loss"$'\t'"${ne_tx_drop} TX drops out of ${ne_tx_packets} packets (${_tx_drop_rate_pct}% loss rate since boot). Loss >0.1% measurably degrades TCP throughput."$'\t'"Run: ethtool -S ${iface} | grep -i drop")
+        _tx_drop_fired=1
+      fi
+    fi
+    if [[ "$_tx_drop_fired" -eq 0 ]]; then
+      # Fallback: packet totals unavailable; absolute counts are traffic-volume-dependent
+      if [[ "$ne_tx_drop" -gt 5000 ]]; then
+        findings+=("CAUSE"$'\t'"Severe TX drop count"$'\t'"${ne_tx_drop} TX drops (packet total unavailable — rate cannot be computed). Enable node_exporter for rate-based analysis."$'\t'"Check: ethtool -g ${iface} for ring buffer size; ethtool -S ${iface} | grep -i drop")
+        _tx_drop_cause=1
+      elif [[ "$ne_tx_drop" -gt 100 ]]; then
+        findings+=("WARN"$'\t'"Elevated TX drop count"$'\t'"${ne_tx_drop} TX drops (packet total unavailable — significance depends on traffic volume). Enable node_exporter for rate-based analysis."$'\t'"Run: ethtool -S ${iface} | grep -i drop")
+      fi
+    fi
+  fi
+
+  # RX drops — same rate-based approach as TX drops
+  if [[ -n "$ne_rx_drop" ]] && [[ "$ne_rx_drop" =~ ^[0-9]+$ ]] && [[ "$ne_rx_drop" -gt 0 ]]; then
+    local _rx_drop_fired=0
+    if [[ -n "$ne_rx_packets" && "$ne_rx_packets" =~ ^[0-9]+$ && "$ne_rx_packets" -gt 0 ]]; then
+      local _rx_drop_rate_pct _rx_drop_rate_int
+      _rx_drop_rate_pct=$(awk -v d="$ne_rx_drop" -v p="$ne_rx_packets" \
+        'BEGIN{printf "%.4f", d/p*100}')
+      _rx_drop_rate_int=$(awk -v v="$_rx_drop_rate_pct" 'BEGIN{printf "%d", v*1000}')
+      if [[ "$_rx_drop_rate_int" -gt 1000 ]]; then   # > 1.000%
+        findings+=("CAUSE"$'\t'"Severe RX packet loss"$'\t'"${ne_rx_drop} RX drops out of ${ne_rx_packets} packets (${_rx_drop_rate_pct}% loss rate since boot). The receive buffer is discarding a significant fraction of incoming frames. Causes: NIC ring buffer too small, CPU interrupt starvation (/proc/net/softnet_stat time_squeeze), or physical layer instability."$'\t'"Check: ethtool -g ${iface} for ring buffer size; ethtool -K ${iface} gro on; check CPU load with top")
+        _rx_drop_fired=1
+      elif [[ "$_rx_drop_rate_int" -gt 100 ]]; then  # > 0.100%
+        findings+=("WARN"$'\t'"Elevated RX packet loss"$'\t'"${ne_rx_drop} RX drops out of ${ne_rx_packets} packets (${_rx_drop_rate_pct}% loss rate since boot). Loss >0.1% measurably impacts TCP throughput."$'\t'"Run: ethtool -S ${iface} | grep -i drop; ethtool -g ${iface}")
+        _rx_drop_fired=1
+      fi
+    fi
+    if [[ "$_rx_drop_fired" -eq 0 ]]; then
+      # Fallback: packet totals unavailable
+      if [[ "$ne_rx_drop" -gt 5000 ]]; then
+        findings+=("CAUSE"$'\t'"Severe RX drop count"$'\t'"${ne_rx_drop} RX drops (packet total unavailable — rate cannot be computed). Enable node_exporter for rate-based analysis."$'\t'"Check: ethtool -g ${iface}; ethtool -K ${iface} gro on")
+      elif [[ "$ne_rx_drop" -gt 100 ]]; then
+        findings+=("WARN"$'\t'"Elevated RX drop count"$'\t'"${ne_rx_drop} RX drops (packet total unavailable — significance depends on traffic volume). Enable node_exporter for rate-based analysis."$'\t'"Run: ethtool -S ${iface} | grep -i drop; ethtool -g ${iface}")
+      fi
+    fi
+  fi
+
+  # Combined physical-layer failure signature (>= 2 of 3 indicators present).
+  # TX drop component uses the _tx_drop_cause flag set by the rate-based analysis above,
+  # so the synthesis threshold matches the proven rate threshold, not an arbitrary count.
+  local _phys_indicators=0
+  [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]] && \
+    (( _phys_indicators++ )) || true
+  [[ -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ && \
+     "$carrier_changes" -gt 500 ]] && (( _phys_indicators++ )) || true
+  [[ "${_tx_drop_cause}" -eq 1 ]] && (( _phys_indicators++ )) || true
+  if (( _phys_indicators >= 2 )); then
+    findings+=("CAUSE"$'\t'"Physical layer failure signature"$'\t'"Multiple indicators point to a physical layer fault: unknown speed negotiation, severe carrier instability (${carrier_changes:-?} transitions), and significant TX packet loss. This combination is characteristic of a damaged cable, failed SFP transceiver, or faulty switch port."$'\t'"1. Replace the patch cable  2. Try a different switch port  3. If SFP: swap the transceiver  4. Run: ethtool -d ${iface} for NIC register dump")
+  fi
+
   # iperf3: TCP retransmits > 0
   if [[ -n "$iperf3_retransmits" ]] && [[ "$iperf3_retransmits" =~ ^[0-9]+$ ]] && \
      [[ "$iperf3_retransmits" -gt 0 ]]; then
@@ -359,9 +479,9 @@ run_wizard() {
         local _wiz_cpu_int
         _wiz_cpu_int=$(printf "%.0f" "$_wiz_cpu")
         if (( _wiz_cpu_int < 15 )); then
-          findings+=("CAUSE"$'\t'"CPU saturation at flap time"$'\t'"CPU idle was ${_wiz_cpu_int}% when flapping began — system was heavily loaded, which can starve NIC driver interrupt handling"$'\t'"Investigate with: top -b -n1 | head -20")
+          findings+=("CAUSE"$'\t'"CPU saturation at flap time"$'\t'"CPU idle was ${_wiz_cpu_int}% when flapping began — system was heavily loaded. Under this level of saturation the kernel's NAPI softirq budget can be exhausted before the NIC ring buffer drains, causing packet loss and link instability. Direct evidence of softirq starvation is visible in /proc/net/softnet_stat (column 9: time_squeeze)."$'\t'"Investigate with: top -b -n1 | head -20; also check: awk '{print \$10}' /proc/net/softnet_stat")
         elif (( _wiz_cpu_int < 30 )); then
-          findings+=("WARN"$'\t'"High CPU load at flap time"$'\t'"CPU idle was ${_wiz_cpu_int}% when flapping began — above-normal load may have delayed NIC interrupt processing"$'\t'"Check: top, htop, or systemd-analyze blame")
+          findings+=("WARN"$'\t'"High CPU load at flap time"$'\t'"CPU idle was ${_wiz_cpu_int}% when flapping began — elevated load can delay NIC interrupt processing and increase softirq latency. Check /proc/net/softnet_stat (column 9: time_squeeze) for direct evidence."$'\t'"Check: top, htop; also: awk '{print \$10}' /proc/net/softnet_stat")
         fi
       fi
       if [[ -n "$_wiz_mem" ]]; then
@@ -426,9 +546,30 @@ run_wizard() {
   _rpt ""
   _rpt "${BOLD}Interface State${RESET}"
   _rpt "  operstate      : ${operstate:-unknown}"
-  _rpt "  carrier_changes: ${carrier_changes:-unknown}"
-  _rpt "  speed          : ${speed:-unknown}"
-  _rpt "  duplex         : ${duplex:-unknown}"
+
+  # carrier_changes with severity hint
+  local _cc_hint=""
+  if [[ -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ ]]; then
+    if   (( carrier_changes > 500 )); then _cc_hint="  [SEVERE — each change = 1 link drop+restore]"
+    elif (( carrier_changes > 20  )); then _cc_hint="  [elevated — stable links expect < 5]"
+    else                                   _cc_hint="  [normal]"
+    fi
+  fi
+  _rpt "  carrier_changes: ${carrier_changes:-unknown}${_cc_hint}"
+
+  # speed with hint when unreadable
+  local _speed_hint=""
+  [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]] && \
+    _speed_hint="  [unreadable — autoneg failed or link down]" || true
+  _rpt "  speed          : ${speed:-unknown}${_speed_hint}"
+
+  # duplex with hint
+  local _duplex_hint=""
+  [[ "${duplex:-}" == "Half" ]] && _duplex_hint="  [collision risk at high load]" || true
+  [[ "${duplex:-}" == "Unknown" || "${duplex:-}" == "Unknown!" ]] && \
+    _duplex_hint="  [unreadable — same cause as unknown speed]" || true
+  _rpt "  duplex         : ${duplex:-unknown}${_duplex_hint}"
+
   _rpt "  autoneg        : ${autoneg:-unknown}"
   _rpt "  power/control  : ${power_control:-unknown}"
   if [[ -n "$_NE_METRICS_CACHE" ]]; then
@@ -492,8 +633,276 @@ run_wizard() {
   _rpt "  Verify  : ./flap -i ${iface} -w 10  (after applying fix)"
   _rpt ""
 
-  # 7. Save report (strip ANSI already done in _rpt)
+  # 7. Fault localization section
+  run_fault_localization "$iface" \
+    "$ethtool_i_out" "$ethtool_out" "$ip_route_out" "$all_links_out" \
+    "$resolv_conf_out" "$dmesg_out" \
+    "${carrier_changes:-}" "${speed:-}" "${rx_crc:-}" "${ne_tx_drop:-}" \
+    "${dut_carrier_changes:-}" "${dut_operstate:-}" "${dut_speed:-}" \
+    "${_tx_drop_cause:-0}"
+
+  # 8. Save report (strip ANSI already done in _rpt)
   printf '%s\n' "${report_lines[@]}" > "${REPORT_DIR}/${backup_id}.txt"
+}
+
+# ── Fault Localization ────────────────────────────────────────────────────────
+# Layer-by-layer fault isolation appended to the wizard report.
+# Args: iface ethtool_i_out ethtool_out ip_route_out all_links_out
+#       resolv_conf_out dmesg_out
+#       carrier_changes speed rx_crc ne_tx_drop
+#       dut_carrier_changes dut_operstate dut_speed
+#       tx_drop_cause (1 if TX drops reached CAUSE level, 0 otherwise)
+run_fault_localization() {
+  local iface="$1"
+  local ethtool_i_out="$2"
+  local ethtool_out="$3"
+  local ip_route_out="$4"
+  local all_links_out="$5"
+  local resolv_conf_out="$6"
+  local dmesg_out="$7"
+  local carrier_changes="$8"
+  local speed="$9"
+  local rx_crc="${10}"
+  local ne_tx_drop="${11}"
+  local dut_carrier_changes="${12}"
+  local dut_operstate="${13}"
+  local dut_speed="${14}"
+  local tx_drop_cause="${15:-0}"
+
+  local SEP="════════════════════════════════════════════════════════════"
+
+  _rpt ""
+  _rpt "${BOLD}${SEP}${RESET}"
+  _rpt "${BOLD}  Fault Localization — ${iface}${RESET}"
+  _rpt "${BOLD}${SEP}${RESET}"
+  _rpt ""
+
+  # ── Layer 1: Physical (cable / connector / SFP) ───────────────────────────
+  local l1_status="OK"
+  local -a l1_evidence=()
+  [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]] && \
+    l1_status="SUSPECT" && l1_evidence+=("Unknown speed (autoneg failed)")
+  if [[ -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ && \
+        "$carrier_changes" -gt 500 ]]; then
+    l1_status="SUSPECT"; l1_evidence+=("${carrier_changes} carrier changes (severe)")
+  fi
+  if [[ -n "$rx_crc" && "$rx_crc" =~ ^[0-9]+$ && "$rx_crc" -gt 0 ]]; then
+    l1_status="SUSPECT"; l1_evidence+=("RX CRC errors (${rx_crc})")
+  fi
+  echo "$ethtool_out" | grep -qi "Link detected: no" && \
+    l1_status="SUSPECT" && l1_evidence+=("No physical link detected")
+  # tx_drop_cause is set by run_wizard's rate-based analysis (>1% loss rate or >5000 absolute fallback)
+  if [[ "${tx_drop_cause}" -eq 1 ]]; then
+    l1_status="SUSPECT"; l1_evidence+=("Severe TX packet loss (${ne_tx_drop} drops)")
+  fi
+
+  local l1_col="$GREEN"
+  [[ "$l1_status" == "SUSPECT" ]] && l1_col="$RED"
+  _rpt "  Layer 1 — Physical (cable / connector / SFP)"
+  _rpt "    Status   : ${l1_col}${l1_status}${RESET}"
+  if [[ "${#l1_evidence[@]}" -gt 0 ]]; then
+    _rpt "    Evidence : $(IFS='; '; echo "${l1_evidence[*]}")"
+    _rpt "    Next step: Replace cable; try a different switch port; swap SFP"
+  fi
+  _rpt ""
+
+  # ── Layer 2: NIC Driver ───────────────────────────────────────────────────
+  local drv_name drv_ver drv_fw
+  drv_name=$(echo "$ethtool_i_out" | grep "^driver:"   | awk '{print $2}' | head -1 || true)
+  drv_ver=$(echo  "$ethtool_i_out" | grep "^version:"  | awk '{print $2}' | head -1 || true)
+  drv_fw=$(echo   "$ethtool_i_out" | grep "^firmware-espace-version:" | awk '{NF=1; print $NF}' \
+            || echo "$ethtool_i_out" | grep "^firmware" | awk '{print $NF}' | head -1 || true)
+
+  local l2drv_status="OK"
+  [[ -z "$drv_name" ]] && l2drv_status="UNKNOWN"
+  echo "$dmesg_out" | grep -qi "reset\|reinit" && l2drv_status="SUSPECT"
+  echo "$dmesg_out" | grep -qi "firmware.*fail\|failed to load firmware" && l2drv_status="SUSPECT"
+  # Severe TX drops with stable carrier_changes → driver queue issue, not physical
+  # Uses tx_drop_cause flag (rate-based CAUSE level) to avoid arbitrary absolute threshold
+  if [[ "${tx_drop_cause}" -eq 1 && \
+        -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ && "$carrier_changes" -lt 5 ]]; then
+    l2drv_status="SUSPECT"
+  fi
+
+  local l2drv_col="$GREEN"
+  [[ "$l2drv_status" == "SUSPECT" ]] && l2drv_col="$RED"
+  [[ "$l2drv_status" == "UNKNOWN" ]] && l2drv_col="$DIM"
+  _rpt "  Layer 2 — NIC Driver"
+  _rpt "    Status   : ${l2drv_col}${l2drv_status}${RESET}"
+  if [[ -n "$drv_name" ]]; then
+    local drv_line="    Driver   : ${drv_name}"
+    [[ -n "$drv_ver" ]] && drv_line+="  v${drv_ver}"
+    [[ -n "$drv_fw"  ]] && drv_line+="  fw ${drv_fw}"
+    _rpt "$drv_line"
+  else
+    _rpt "    Driver   : (ethtool -i not available)"
+  fi
+  _rpt ""
+
+  # ── Layer 2: Switch Port ──────────────────────────────────────────────────
+  local l2sw_status="UNKNOWN"
+  local -a l2sw_evidence=()
+  echo "$ethtool_out" | grep -qi "Duplex: Half" && \
+    l2sw_status="SUSPECT" && l2sw_evidence+=("Half-duplex — autoneg mismatch with switch")
+  # STP changes detected would also be a switch indicator, but that's PCAP-only
+
+  local l2sw_col="$DIM"
+  [[ "$l2sw_status" == "SUSPECT" ]] && l2sw_col="$RED"
+  _rpt "  Layer 2 — Switch Port"
+  _rpt "    Status   : ${l2sw_col}${l2sw_status}${RESET}"
+  if [[ "${#l2sw_evidence[@]}" -gt 0 ]]; then
+    _rpt "    Evidence : $(IFS='; '; echo "${l2sw_evidence[*]}")"
+  else
+    _rpt "    Note     : LLDP not available; no STP topology changes seen"
+  fi
+  _rpt "    Next step: Check switch port error counters; try a different port"
+  _rpt ""
+
+  # ── Layer 3: Gateway / Router ─────────────────────────────────────────────
+  local gateway
+  gateway=$(echo "$ip_route_out" | awk '/^default via/{print $3; exit}' || true)
+
+  local l3_status="UNKNOWN"
+  local l3_gw_line="" l3_inet_line=""
+  if [[ -n "$gateway" ]]; then
+    local ping_gw_out
+    ping_gw_out=$(_wiz_cmd ping_gw ping -c 1 -W 2 "$gateway")
+    if echo "$ping_gw_out" | grep -q "1 received\|1 packets received"; then
+      l3_status="OK"
+      local rtt
+      rtt=$(echo "$ping_gw_out" | grep -oP 'time=\K[0-9.]+' | head -1 || true)
+      l3_gw_line="    Gateway  : ${gateway}  (reachable${rtt:+, ${rtt}ms})"
+    else
+      l3_status="SUSPECT"
+      l3_gw_line="    Gateway  : ${gateway}  (UNREACHABLE — check router/cable to gateway)"
+    fi
+    # Internet reachability (only if gateway OK)
+    if [[ "$l3_status" == "OK" ]]; then
+      local ping_inet_out
+      ping_inet_out=$(_wiz_cmd ping_inet ping -c 1 -W 2 8.8.8.8)
+      if echo "$ping_inet_out" | grep -q "1 received\|1 packets received"; then
+        l3_inet_line="    Internet : reachable (8.8.8.8)"
+      else
+        l3_inet_line="    Internet : UNREACHABLE (gateway OK but no internet — check router/ISP)"
+      fi
+    fi
+  else
+    l3_gw_line="    Gateway  : not configured (no default route)"
+  fi
+
+  local l3_col="$GREEN"
+  [[ "$l3_status" == "SUSPECT" ]] && l3_col="$RED"
+  [[ "$l3_status" == "UNKNOWN" ]] && l3_col="$DIM"
+  _rpt "  Layer 3 — Gateway / Router"
+  _rpt "    Status   : ${l3_col}${l3_status}${RESET}"
+  [[ -n "$l3_gw_line"   ]] && _rpt "$l3_gw_line"
+  [[ -n "$l3_inet_line" ]] && _rpt "$l3_inet_line"
+  _rpt ""
+
+  # ── VPN ──────────────────────────────────────────────────────────────────
+  local vpn_iface
+  vpn_iface=$(echo "$all_links_out" | grep -oP '(?<=\d: )(tun|tap|wg|vpn)\w*' | head -1 || true)
+  _rpt "  VPN"
+  if [[ -n "$vpn_iface" ]]; then
+    local vpn_route
+    vpn_route=$(echo "$ip_route_out" | grep "$vpn_iface" | head -1 || true)
+    _rpt "    Status   : ${YELLOW}Detected${RESET} (${vpn_iface})"
+    [[ -n "$vpn_route" ]] && _rpt "    Route    : ${vpn_route}"
+    _rpt "    Note     : Check VPN tunnel stability if routing issues are suspected"
+  else
+    _rpt "    Status   : ${DIM}Not detected${RESET}"
+  fi
+  _rpt ""
+
+  # ── DNS ───────────────────────────────────────────────────────────────────
+  local nameserver
+  nameserver=$(echo "$resolv_conf_out" | awk '/^nameserver/{print $2; exit}' || true)
+  local dns_status="UNKNOWN"
+  if [[ -n "$nameserver" ]]; then
+    local dig_out
+    dig_out=$(_wiz_cmd dig_dns dig +short +time=2 +tries=1 google.com "@${nameserver}")
+    if [[ -n "$dig_out" ]]; then
+      dns_status="OK"
+    else
+      dns_status="SUSPECT"
+    fi
+  fi
+
+  local dns_col="$GREEN"
+  [[ "$dns_status" == "SUSPECT" ]] && dns_col="$RED"
+  [[ "$dns_status" == "UNKNOWN" ]] && dns_col="$DIM"
+  _rpt "  DNS"
+  _rpt "    Status   : ${dns_col}${dns_status}${RESET}"
+  if [[ -n "$nameserver" ]]; then
+    _rpt "    Resolver : ${nameserver}${dns_status:+  (google.com ${dns_status,,})}"
+  else
+    _rpt "    Resolver : not configured (/etc/resolv.conf has no nameserver)"
+  fi
+  _rpt ""
+
+  # ── DUT Interface ─────────────────────────────────────────────────────────
+  local dut_verdict=""
+  if [[ -n "$DUT_IFACE" ]]; then
+    local dut_status="OK"
+    local -a dut_evidence=()
+
+    if [[ -n "$dut_carrier_changes" && "$dut_carrier_changes" =~ ^[0-9]+$ && \
+          -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ ]]; then
+      if (( dut_carrier_changes > carrier_changes * 5 && dut_carrier_changes > 20 )); then
+        dut_status="SUSPECT"
+        dut_evidence+=("DUT carrier changes (${dut_carrier_changes}) >> host (${carrier_changes})")
+      fi
+    fi
+    if [[ "${dut_speed:-}" == "Unknown!" || "${dut_speed:-}" == "Unknown" ]] && \
+       [[ "${speed:-}" != "Unknown!" && "${speed:-}" != "Unknown" && -n "${speed:-}" ]]; then
+      dut_status="SUSPECT"
+      dut_evidence+=("DUT speed Unknown! while host speed is ${speed}")
+    fi
+    [[ "${dut_operstate:-}" == "down" || "${dut_operstate:-}" == "unknown" ]] && \
+      dut_status="SUSPECT" && dut_evidence+=("DUT operstate=${dut_operstate:-}")
+
+    local dut_col="$GREEN"
+    [[ "$dut_status" == "SUSPECT" ]] && dut_col="$RED"
+    _rpt "  DUT Interface (${DUT_IFACE} — device under test)"
+    _rpt "    Status   : ${dut_col}${dut_status}${RESET}"
+    local _cc_display="${dut_carrier_changes:-?}  vs host ${iface}: ${carrier_changes:-?}"
+    _rpt "    Carrier changes: ${_cc_display}"
+    _rpt "    Speed    : ${dut_speed:-unknown}  vs host ${iface}: ${speed:-unknown}"
+    _rpt "    Link state: ${dut_operstate:-unknown}  vs host ${iface}: up"
+    if [[ "${#dut_evidence[@]}" -gt 0 ]]; then
+      _rpt "    Evidence : $(IFS='; '; echo "${dut_evidence[*]}")"
+    fi
+    _rpt ""
+    [[ "$dut_status" == "SUSPECT" ]] && \
+      dut_verdict="Fault is likely in the DUT or the DUT-host cable. Host interface (${iface}) is stable — the issue is not upstream of this computer."
+  fi
+
+  # ── Verdict ───────────────────────────────────────────────────────────────
+  local vsep="  ──────────────────────────────────────────────────────────"
+  local verdict=""
+  if [[ -n "$dut_verdict" ]]; then
+    verdict="$dut_verdict"
+  elif [[ "$l1_status" == "SUSPECT" && "$l2drv_status" != "SUSPECT" && \
+          "$l3_status" != "SUSPECT" ]]; then
+    verdict="Fault is most likely in the PHYSICAL LAYER (cable, SFP, or switch port)."
+  elif [[ "$l1_status" == "SUSPECT" && "$l2drv_status" == "SUSPECT" ]]; then
+    verdict="Physical layer and driver both show issues — address physical first (replace cable/SFP), then check driver/firmware."
+  elif [[ "$l1_status" != "SUSPECT" && "$l2drv_status" == "SUSPECT" ]]; then
+    verdict="NIC DRIVER or firmware issue — physical layer appears OK. Update driver or firmware; check dmesg for reset events."
+  elif [[ "$l3_status" == "SUSPECT" ]]; then
+    verdict="GATEWAY/ROUTER unreachable — not a link-layer fault. Check the cable to the gateway and the gateway itself."
+  elif [[ "$dns_status" == "SUSPECT" ]]; then
+    verdict="DNS resolver issue — link is stable. Check /etc/resolv.conf and firewall rules for UDP port 53."
+  elif [[ "$l1_status" == "OK" && "$l2drv_status" == "OK" && \
+          "$l3_status" != "SUSPECT" && "$dns_status" != "SUSPECT" ]]; then
+    verdict="No fault detected at any monitored layer. The flap may have been transient; monitor with: ./flap -i ${iface} -f 30"
+  else
+    verdict="Multiple or ambiguous indicators — investigate the PHYSICAL LAYER first (replace cable, try different switch port)."
+  fi
+
+  _rpt "$vsep"
+  _rpt "  ${BOLD}VERDICT: ${verdict}${RESET}"
+  _rpt "$vsep"
 }
 
 # ── Step 1: Collect raw log lines ─────────────────────────────────────────────
