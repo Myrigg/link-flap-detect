@@ -649,6 +649,13 @@ _drv_advisories() {
         "Disable flow control: ethtool -A ${iface} autoneg off rx off tx off; update sfc firmware" \
         "https://docs.amd.com/"
       ;;
+    cdc_ncm|cdc_ether|cdc_mbim)
+      printf 'WARN\t%s\t%s\t%s\t%s\n' \
+        "Driver note — ${drv} (USB CDC Ethernet)" \
+        "cdc_ncm/cdc_ether/cdc_mbim are USB-attached Ethernet adapters. High RX drop counts are typically caused by USB NCM aggregation limits, URB pool exhaustion, or USB host-controller bandwidth contention — not the Ethernet cable. The firmware-version field reflects the kernel version string, which is normal for this driver. CDC Status OK confirms the USB control channel is healthy; it does not guarantee the data path is drop-free. Swapping the Ethernet cable or switch port will not resolve drops that originate in the USB subsystem." \
+        "1. Check NCM parameters: cat /sys/module/cdc_ncm/parameters/*  2. Check USB errors: dmesg | grep -iE 'cdc_ncm|xhci|ehci|usb.*error|usb.*reset'  3. Try a different USB host port (different root hub, not just a different socket on the same hub)  4. Inspect the USB path for intermediate hubs: udevadm info --query=path /sys/class/net/${iface}  5. If drops persist across all USB ports: replace the USB Ethernet adapter itself" \
+        "https://www.kernel.org/doc/html/latest/networking/cdc_ncm.html"
+      ;;
   esac
 }
 
@@ -741,6 +748,29 @@ run_wizard() {
     lldp_raw=$(_wiz_cmd lldpctl lldpctl "$iface")
     lldp_peer_name=$(echo "$lldp_raw" | awk -F'SysName:' 'NF>1{gsub(/^[ \t]+/,"",$2); print $2; exit}')
     lldp_peer_port=$(echo "$lldp_raw" | awk -F'PortDescr:' 'NF>1{gsub(/^[ \t]+/,"",$2); print $2; exit}')
+  fi
+
+  # USB NIC detection — resolve the device symlink; if it passes through a USB bus
+  # the interface is USB-attached (cdc_ncm, cdc_ether, asix, etc.).
+  # In test mode, the fixture file 'iface_usb_path' overrides the live sysfs lookup.
+  local _iface_usb_path="" _iface_is_usb=0
+  if [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+    _iface_usb_path=$(cat "${_LINK_FLAP_TEST_WIZARD_DIR}/iface_usb_path" 2>/dev/null || true)
+  elif [[ -L "/sys/class/net/${iface}/device" ]]; then
+    _iface_usb_path=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null || true)
+  fi
+  [[ "$_iface_usb_path" == *"/usb"* ]] && _iface_is_usb=1
+
+  # If USB NIC: collect USB kernel events and cdc_ncm module parameters
+  local usb_dmesg_out="" ncm_params_out=""
+  if [[ "$_iface_is_usb" -eq 1 ]]; then
+    usb_dmesg_out=$(_wiz_cmd usb_dmesg \
+      sh -c "dmesg | grep -iE 'cdc_ncm|cdc_ether|xhci|ehci|usb.*error|usb.*reset|usb.*disconnect' | tail -30")
+    if [[ -d /sys/module/cdc_ncm/parameters ]]; then
+      ncm_params_out=$(for _p in /sys/module/cdc_ncm/parameters/*; do
+        printf '%s=%s\n' "$(basename "$_p")" "$(cat "$_p" 2>/dev/null)"
+      done)
+    fi
   fi
 
   # 4. Build findings array — each entry: "LEVEL<tab>Title<tab>Description<tab>Fix"
@@ -892,6 +922,20 @@ run_wizard() {
       [[ -z "$adv_level" ]] && continue
       findings+=("${adv_level}"$'\t'"${adv_title}"$'\t'"${adv_desc}"$'\t'"${adv_fix}  |  See: ${adv_src}")
     done < <(_drv_advisories "$_adv_drv_name" "$_adv_drv_ver" "$_adv_drv_fw" "$iface")
+  fi
+
+  # USB NIC — high RX drops with a stable link strongly implicate the USB subsystem
+  # rather than the Ethernet cable.  Only add these findings when we know it's USB.
+  if [[ "$_iface_is_usb" -eq 1 ]]; then
+    if [[ -n "$ne_rx_drop" && "$ne_rx_drop" =~ ^[0-9]+$ && "$ne_rx_drop" -gt 100 ]]; then
+      local _cc="${carrier_changes:-0}"
+      if [[ "$_cc" =~ ^[0-9]+$ && "$_cc" -lt 20 ]]; then
+        findings+=("WARN"$'\t'"USB NIC: high RX drops with stable link"$'\t'"${ne_rx_drop} RX drops on ${_adv_drv_name:-cdc_ncm} with only ${_cc} carrier changes. A stable link and high drop count on a USB Ethernet adapter strongly suggests a USB-side issue — NCM aggregation limits, URB pool exhaustion, or USB host-controller bandwidth contention — rather than an Ethernet cable or switch port fault. Swapping the Ethernet cable and switch port will not resolve drops that originate in the USB subsystem."$'\t'"Check: dmesg | grep -iE 'cdc_ncm|xhci|usb.*reset'; try a different USB root-hub port; replace the USB adapter if drops persist")
+      fi
+    fi
+    if [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]]; then
+      findings+=("INFO"$'\t'"USB NIC: Unknown speed is a driver limitation, not autoneg failure"$'\t'"Many USB CDC Ethernet adapters (${_adv_drv_name:-cdc_ncm}) do not expose link speed via ethtool. An Unknown speed result does not indicate cable or autoneg failure — it is a known limitation of USB NIC drivers. Use ip link show ${iface} to confirm the interface is UP/LOWER_UP."$'\t'"ip link show ${iface}")
+    fi
   fi
 
   # 5. Historical system load at flap time (Prometheus, if configured)
@@ -1125,8 +1169,14 @@ run_fault_localization() {
   # ── Layer 1: Physical (cable / connector / SFP) ───────────────────────────
   local l1_status="OK"
   local -a l1_evidence=()
-  [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]] && \
-    l1_status="SUSPECT" && l1_evidence+=("Unknown speed (autoneg failed)")
+  if [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]]; then
+    if [[ "$_iface_is_usb" -eq 1 ]]; then
+      # USB NICs commonly report Unknown speed — this is a driver limitation, not autoneg failure.
+      l1_evidence+=("Unknown speed (expected ${_adv_drv_name:-USB NIC} driver limitation — not an autoneg fault)")
+    else
+      l1_status="SUSPECT"; l1_evidence+=("Unknown speed (autoneg failed)")
+    fi
+  fi
   if [[ -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ && \
         "$carrier_changes" -gt 500 ]]; then
     l1_status="SUSPECT"; l1_evidence+=("${carrier_changes} carrier changes (severe)")
@@ -1180,8 +1230,25 @@ run_fault_localization() {
     _rpt "    Evidence : $(IFS='; '; echo "${l1_evidence[*]}")"
     if echo "${l1_evidence[*]}" | grep -qi "remote\|LLDP"; then
       _rpt "    Next step: Investigate remote device/port${lldp_note:+ ($lldp_note)}; check far-end SFP and fibre connectors"
+    elif [[ "$_iface_is_usb" -eq 1 ]]; then
+      _rpt "    Next step: Cable+port already swapped → the USB adapter, USB cable, or USB host controller is suspect"
     else
       _rpt "    Next step: Replace cable; try a different switch port; swap SFP"
+    fi
+  fi
+  if [[ "$_iface_is_usb" -eq 1 ]]; then
+    _rpt "    USB path : ${_iface_usb_path:-unknown}"
+    if [[ -n "$ncm_params_out" ]]; then
+      _rpt "    NCM params:"
+      while IFS= read -r _p; do
+        _rpt "               ${_p}"
+      done <<< "$ncm_params_out"
+    fi
+    if [[ -n "$usb_dmesg_out" ]]; then
+      _rpt "    USB events (recent dmesg):"
+      while IFS= read -r _u; do
+        _rpt "               ${_u}"
+      done <<< "$usb_dmesg_out"
     fi
   fi
   _rpt ""

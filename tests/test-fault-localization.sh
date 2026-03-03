@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–95
+# Tests covered: 83–95, 96–99
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -403,4 +403,140 @@ if [[ $ok -eq 1 ]]; then
   pass "95: e1000e driver emits no advisory (exit=$EXITCODE)"
 else
   fail "95: e1000e driver emits no advisory" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 96: cdc_ncm advisory emitted (WARN level, kernel.org source) ──────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: cdc_ncm
+version: (unset)
+firmware-version: 6.17.9-14-generic
+EOF
+# cdc_ncm commonly reports Unknown speed — provide that so the USB path is exercised
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for enx001122334455:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: yes
+EOF
+# Simulate USB-attached interface via fixture file
+echo "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1.2/net/enx001122334455" \
+  > "$wiz_dir/iface_usb_path"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+echo "$OUT" | grep -qi "cdc_ncm"                             || ok=0
+echo "$OUT" | grep -qi "advisory\|driver note"               || ok=0
+echo "$OUT" | grep -qi "kernel.org"                          || ok=0
+echo "$OUT" | grep -qi "USB"                                 || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "96: cdc_ncm driver advisory shown with kernel.org source (exit=$EXITCODE)"
+else
+  fail "96: cdc_ncm driver advisory shown with kernel.org source" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 97: cdc_ncm Unknown speed does NOT trigger Layer 1 SUSPECT ────────────────
+#    For USB NICs, Unknown speed is a driver limitation, not an autoneg failure.
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: cdc_ncm
+version: (unset)
+firmware-version: 6.17.9-14-generic
+EOF
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for enx001122334455:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: yes
+EOF
+echo "2" > "$wiz_dir/carrier_changes"
+echo "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1.2/net/enx001122334455" \
+  > "$wiz_dir/iface_usb_path"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+# Must NOT mark Layer 1 as SUSPECT solely because of Unknown speed on a USB NIC
+if echo "$OUT" | grep -i "Layer 1" | grep -qi "SUSPECT"; then ok=0; fi
+# The evidence line should mention "driver limitation", not "autoneg failed"
+echo "$OUT" | grep -qi "limitation\|driver limit" || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "97: cdc_ncm Unknown speed does not trigger Layer 1 SUSPECT (exit=$EXITCODE)"
+else
+  fail "97: cdc_ncm Unknown speed does not trigger Layer 1 SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 98: cdc_ncm high RX drops + stable link → USB NIC finding emitted ─────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: cdc_ncm
+version: (unset)
+firmware-version: 6.17.9-14-generic
+EOF
+echo "2" > "$wiz_dir/carrier_changes"
+echo "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1.2/net/enx001122334455" \
+  > "$wiz_dir/iface_usb_path"
+
+NE_CDC_DROPS=$(mktemp "$TESTDIR/ne-cdc-drop-XXXXXX.txt")
+cat > "$NE_CDC_DROPS" <<'EOF'
+node_network_up{device="eth0"} 1
+node_network_carrier_changes_total{device="eth0"} 2
+node_network_receive_errs_total{device="eth0"} 0
+node_network_transmit_errs_total{device="eth0"} 0
+node_network_receive_drop_total{device="eth0"} 50000
+node_network_transmit_drop_total{device="eth0"} 0
+node_network_receive_packets_total{device="eth0"} 500000
+node_network_transmit_packets_total{device="eth0"} 500000
+EOF
+
+run_wizard_ne_test "$wiz_dir" "$NE_CDC_DROPS" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+echo "$OUT" | grep -qi "USB NIC"                             || ok=0
+echo "$OUT" | grep -qi "stable link\|carrier"                || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "98: cdc_ncm high RX drops with stable link → USB NIC finding (exit=$EXITCODE)"
+else
+  fail "98: cdc_ncm high RX drops with stable link → USB NIC finding" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 99: Non-USB NIC Unknown speed still triggers Layer 1 SUSPECT (regression) ─
+#    Confirms that the USB carve-out doesn't break the standard path.
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: igb
+version: 5.14.2-k
+firmware-version: 3.25.0
+EOF
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: yes
+EOF
+echo "3" > "$wiz_dir/carrier_changes"
+# No iface_usb_path file → not a USB NIC
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                                          || ok=0
+# "Status : SUSPECT" appears 2–3 lines after "Layer 1 — Physical"
+echo "$OUT" | grep -A3 "Layer 1 — Physical" | grep -qi "SUSPECT"              || ok=0
+echo "$OUT" | grep -qi "autoneg failed"                                        || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "99: non-USB NIC Unknown speed still triggers Layer 1 SUSPECT (exit=$EXITCODE)"
+else
+  fail "99: non-USB NIC Unknown speed still triggers Layer 1 SUSPECT" "exit=$EXITCODE\n$OUT"
 fi
