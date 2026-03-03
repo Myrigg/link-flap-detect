@@ -776,8 +776,7 @@ run_fault_localization() {
   local drv_name drv_ver drv_fw
   drv_name=$(echo "$ethtool_i_out" | grep "^driver:"   | awk '{print $2}' | head -1 || true)
   drv_ver=$(echo  "$ethtool_i_out" | grep "^version:"  | awk '{print $2}' | head -1 || true)
-  drv_fw=$(echo   "$ethtool_i_out" | grep "^firmware-espace-version:" | awk '{NF=1; print $NF}' \
-            || echo "$ethtool_i_out" | grep "^firmware" | awk '{print $NF}' | head -1 || true)
+  drv_fw=$(echo   "$ethtool_i_out" | grep "^firmware-version:" | awk '{print $2}' | head -1 || true)
 
   local l2drv_status="OK"
   [[ -z "$drv_name" ]] && l2drv_status="UNKNOWN"
@@ -934,7 +933,7 @@ run_fault_localization() {
     local _cc_display="${dut_carrier_changes:-?}  vs host ${iface}: ${carrier_changes:-?}"
     _rpt "    Carrier changes: ${_cc_display}"
     _rpt "    Speed    : ${dut_speed:-unknown}  vs host ${iface}: ${speed:-unknown}"
-    _rpt "    Link state: ${dut_operstate:-unknown}  vs host ${iface}: up"
+    _rpt "    Link state: ${dut_operstate:-unknown}  vs host ${iface}: ${operstate:-unknown}"
     if [[ "${#dut_evidence[@]}" -gt 0 ]]; then
       _rpt "    Evidence : $(IFS='; '; echo "${dut_evidence[*]}")"
     fi
@@ -1755,6 +1754,6 @@ fi
 if [[ -n "$FOLLOW_SECONDS" ]]; then
   echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
   sleep "$FOLLOW_SECONDS"
-  exec "$0" "${_ORIG_ARGS[@]}"
+  exec env _FLAP_FOLLOW_CHILD=1 "$0" "${_ORIG_ARGS[@]}"
 fi
 exit $(( FLAPPING_FOUND ))
