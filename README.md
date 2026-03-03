@@ -410,9 +410,46 @@ The wizard:
 1. **Snapshots network config files** before you act (netplan, NetworkManager, sysctl, etc.)
 2. **Collects interface state** — operstate, carrier changes, speed/duplex, autoneg
 3. **Checks for known causes** — EEE, runtime power management, CRC errors, duplex mismatch, no link, kernel errors
-4. **Analyses flap patterns** in the log window (regular intervals may indicate STP/LACP/power timers)
-5. **Prints colour-coded findings** (`[CAUSE]` / `[WARN]` / `[INFO]`) with `[FIX]` commands
-6. **Saves a text report** to `~/.local/share/link-flap/reports/`
+4. **Interprets counters with severity tiers** — raw numbers are annotated and thresholded
+5. **Synthesises multi-indicator findings** — when several symptoms align, names the fault class directly
+6. **Analyses flap patterns** in the log window (regular intervals may indicate STP/LACP/power timers)
+7. **Prints colour-coded findings** (`[CAUSE]` / `[WARN]` / `[INFO]`) with `[FIX]` commands
+8. **Saves a text report** to `~/.local/share/link-flap/reports/`
+
+### Wizard findings reference
+
+| Condition | Level | Finding |
+|---|---|---|
+| `carrier_changes` > 500 | `[CAUSE]` | Severe carrier instability |
+| `carrier_changes` > 20 | `[WARN]` | High carrier changes since boot |
+| Speed = `Unknown!` | `[CAUSE]` | Link speed unreadable — auto-negotiation failure |
+| TX drops > 5000 | `[CAUSE]` | Severe TX drop count |
+| TX drops > 100 | `[WARN]` | Elevated TX drop count |
+| RX drops > 5000 | `[CAUSE]` | Severe RX drop count |
+| RX drops > 100 | `[WARN]` | Elevated RX drop count |
+| ≥ 2 of: Unknown speed + carrier > 500 + TX drops > 1000 | `[CAUSE]` | Physical layer failure signature |
+| EEE enabled | `[CAUSE]` | Energy-Efficient Ethernet enabled |
+| `power/control` = auto | `[CAUSE]` | NIC power management enabled |
+| RX CRC errors > 0 | `[CAUSE]` | RX CRC errors detected |
+| No physical link | `[CAUSE]` | No physical link detected |
+| Hardware error in dmesg | `[CAUSE]` | Hardware error in kernel log |
+| CPU idle < 15% at flap time (`-m`) | `[CAUSE]` | CPU saturation at flap time |
+| Half-duplex | `[WARN]` | Half-duplex detected |
+| NIC reset/reinit in dmesg | `[WARN]` | NIC reset/reinit events |
+| RX/TX errors > 0 | `[WARN]` | RX/TX errors (node_exporter) |
+| Memory < 10% at flap time (`-m`) | `[WARN]` | Low memory at flap time |
+
+The Interface State section also annotates raw values with context hints:
+
+```
+Interface State
+  operstate      : unknown
+  carrier_changes: 53792  [SEVERE — each change = 1 link drop+restore]
+  speed          : Unknown!  [unreadable — autoneg failed or link down]
+  duplex         : Unknown  [unreadable — same cause as unknown speed]
+  autoneg        : unknown
+  power/control  : unknown
+```
 
 Override save locations via environment variables: `BACKUP_DIR`, `REPORT_DIR`.
 
@@ -477,6 +514,7 @@ bash tests/test-node-exporter.sh  # node_exporter metric enrichment
 bash tests/test-iperf3.sh         # iperf3 bandwidth enrichment
 bash tests/test-correlation.sh    # cross-interface correlation
 bash tests/test-live-system.sh    # live journald / syslog / sysfs reads
-bash tests/test-fleet.sh          # --fleet Prometheus fleet scan
-bash tests/test-sysload.sh        # historical system load correlation
+bash tests/test-fleet.sh              # --fleet Prometheus fleet scan
+bash tests/test-sysload.sh            # historical system load correlation
+bash tests/test-wizard-enrichment.sh  # wizard severity tiers and synthesis
 ```

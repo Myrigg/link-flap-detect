@@ -58,6 +58,10 @@ source "$TESTS_DIR/test-live-system.sh"
 source "$TESTS_DIR/test-fleet.sh"
 # shellcheck source=tests/test-sysload.sh
 source "$TESTS_DIR/test-sysload.sh"
+# shellcheck source=tests/test-wizard-enrichment.sh
+source "$TESTS_DIR/test-wizard-enrichment.sh"
+# shellcheck source=tests/test-fault-localization.sh
+source "$TESTS_DIR/test-fault-localization.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))
