@@ -469,8 +469,34 @@ The wizard:
 4. **Interprets counters with severity tiers** — raw numbers are annotated and thresholded
 5. **Synthesises multi-indicator findings** — when several symptoms align, names the fault class directly
 6. **Analyses flap patterns** in the log window (regular intervals may indicate STP/LACP/power timers)
-7. **Prints colour-coded findings** (`[CAUSE]` / `[WARN]` / `[INFO]`) with `[FIX]` commands
+7. **Prints colour-coded findings** — an at-a-glance summary table followed by
+   numbered detail blocks (`[CAUSE]` / `[WARN]` / `[INFO]`), each with a `[FIX]` command
 8. **Saves a text report** to `~/.local/share/link-flap/reports/`
+
+**Example Findings output:**
+```
+Findings
+
+  #  Level   Title
+  ─  ──────  ───────────────────────────────────────────────────────
+  1  CAUSE   Severe carrier instability
+  2  WARN    High carrier changes since boot
+
+  ── Details ────────────────────────────────────────────────────
+
+  [1] [CAUSE] Severe carrier instability
+      542 link state transitions since boot (cumulative). A healthy,
+      stable link has 1–5 total changes across its entire lifetime
+      (initial autoneg + planned reboots). 500+ transitions indicates
+      sustained physical instability: faulty cable, degraded SFP,
+      switch port fault, or NIC hardware failure.
+      [FIX]  Replace cable or SFP; try a different switch port; run: ethtool -d eth0
+
+  [2] [WARN] High carrier changes since boot
+      50 link state transitions since boot. Elevated but not severe.
+      Could be a marginal cable, intermittent SFP, or switch port issue.
+      [FIX]  Log in to switch and inspect port statistics
+```
 
 ### Fault Localization
 
