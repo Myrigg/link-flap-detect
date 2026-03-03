@@ -20,6 +20,8 @@
 #   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
 #   -r BACKUP_ID  Restore config files from a saved backup (use 'list' to show all backups)
 #   -f SECONDS    Follow mode: re-run every N seconds (Ctrl-C to stop)
+#   -W URL        Webhook URL for flap/clear alerts (Slack, Discord, or generic);
+#                 saved for future runs. Fires on state changes only in follow mode.
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
@@ -46,6 +48,7 @@ PROM_URL=${PROM_URL:-""}
 NODE_EXPORTER_URL="${NODE_EXPORTER_URL:-http://localhost:9100}"
 IPERF3_SERVER="${IPERF3_SERVER:-}"
 FOLLOW_SECONDS="${FOLLOW_SECONDS:-}"
+WEBHOOK_URL="${WEBHOOK_URL:-}"
 DIAG_IFACE=${DIAG_IFACE:-""}
 ROLLBACK_ID=${ROLLBACK_ID:-""}
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/.local/share/link-flap/backups}"
@@ -54,6 +57,7 @@ _CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/link-flap"
 _CONFIG_FILE="${_CONFIG_DIR}/config"
 _PROM_URL_FROM_FLAG=0        # set to 1 when -m is explicitly passed
 _IPERF3_SERVER_FROM_FLAG=0   # set to 1 when -b is explicitly passed
+_WEBHOOK_URL_FROM_FLAG=0     # set to 1 when -W is explicitly passed
 _FLAP_INTERACTIVE_MODE=0     # set to 1 when no-arg interactive menu ran
 _INTERACTIVE_ARGS=()         # args to reconstruct for "re-run same test"
 VERBOSE=0
@@ -161,6 +165,8 @@ _load_config() {
     PROM_URL=$(_config_get "PROM_URL")
   [[ "$_IPERF3_SERVER_FROM_FLAG" -eq 0 && -z "$IPERF3_SERVER" ]] && \
     IPERF3_SERVER=$(_config_get "IPERF3_SERVER")
+  [[ "$_WEBHOOK_URL_FROM_FLAG"  -eq 0 && -z "$WEBHOOK_URL"   ]] && \
+    WEBHOOK_URL=$(_config_get "WEBHOOK_URL")
   return 0  # prevent set -e exit when last && condition is false
 }
 
@@ -398,7 +404,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
-while getopts ":w:t:i:p:m:n:b:d:r:f:vh" opt; do
+while getopts ":w:t:i:p:m:n:b:d:r:f:W:vh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
@@ -410,6 +416,7 @@ while getopts ":w:t:i:p:m:n:b:d:r:f:vh" opt; do
     d) DIAG_IFACE="$OPTARG"     ;;
     r) ROLLBACK_ID="$OPTARG"    ;;
     f) FOLLOW_SECONDS="$OPTARG" ;;
+    W) WEBHOOK_URL="$OPTARG"; _WEBHOOK_URL_FROM_FLAG=1 ;;
     v) VERBOSE=1                ;;
     h) usage                    ;;
     :) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
@@ -426,6 +433,7 @@ _load_config
 # Persist values that were explicitly passed as flags
 [[ "$_PROM_URL_FROM_FLAG"      -eq 1 ]] && _save_config "PROM_URL"      "$PROM_URL"
 [[ "$_IPERF3_SERVER_FROM_FLAG" -eq 1 ]] && _save_config "IPERF3_SERVER" "$IPERF3_SERVER"
+[[ "$_WEBHOOK_URL_FROM_FLAG"   -eq 1 ]] && _save_config "WEBHOOK_URL"   "$WEBHOOK_URL"
 
 # Interactive prompts (all self-guard for TTY / test mode)
 _prompt_prom_url
@@ -456,6 +464,9 @@ if [[ -n "$NODE_EXPORTER_URL" ]] && \
    [[ "$NODE_EXPORTER_URL" != "off" ]] && \
    ! [[ "$NODE_EXPORTER_URL" =~ ^https?:// ]]; then
   echo "Error: -n must be 'off' or a URL starting with http:// or https://" >&2; exit 1
+fi
+if [[ -n "$WEBHOOK_URL" ]] && ! [[ "$WEBHOOK_URL" =~ ^https?:// ]]; then
+  echo "Error: -W must be a URL starting with http:// or https://" >&2; exit 1
 fi
 if [[ "$FLEET_MODE" -eq 1 ]] && [[ -z "$PROM_URL" ]]; then
   echo "Error: --fleet requires -m URL (Prometheus base URL)." >&2; exit 1
@@ -1570,6 +1581,34 @@ collect_from_tshark() {
     }'
 }
 
+# _send_webhook — POST a JSON alert to a Slack, Discord, or generic webhook.
+# Args: url event(flapping|cleared) iface [transitions]
+_send_webhook() {
+  local url="$1" event="$2" iface="$3" transitions="${4:-}"
+  local message payload
+
+  if [[ "$event" == "flapping" ]]; then
+    message="[FLAPPING] ${iface} — ${transitions} transitions detected"
+  else
+    message="[CLEARED] ${iface} — link has stabilised"
+  fi
+
+  # Test hook: write to log file instead of calling curl
+  if [[ -n "${_LINK_FLAP_TEST_WEBHOOK_LOG:-}" ]]; then
+    echo "${event}:${iface}:${transitions:-}" >> "$_LINK_FLAP_TEST_WEBHOOK_LOG"
+    return 0
+  fi
+
+  if [[ "$url" == *"discord.com"* ]]; then
+    payload="{\"content\":\"${message}\",\"username\":\"link-flap-detect\"}"
+  else
+    payload="{\"text\":\"${message}\"}"
+  fi
+
+  curl -sf -X POST -H "Content-Type: application/json" \
+    -d "$payload" --max-time 5 "$url" >/dev/null 2>&1 || true
+}
+
 prom_query() {
   # Query Prometheus instant API; return first result value or empty string.
   # _LINK_FLAP_TEST_PROM: path to a canned JSON response file (test hook).
@@ -2150,6 +2189,7 @@ fi
 FLAPPING_FOUND=0
 FLAPPING_COUNT=0
 FLAPPING_IFACES=()
+declare -A FLAPPING_TRANSITIONS=()
 
 # Get unique interfaces from TMPFILE
 mapfile -t IFACES < <(awk '{print $2}' "$TMPFILE" | sort -u)
@@ -2198,6 +2238,7 @@ fi
 [[ -n "$_NE_METRICS_CACHE" ]] && echo -e "node_exporter: ${CYAN}${NODE_EXPORTER_URL}${RESET}"
 [[ -n "$_IPERF3_RESULT_CACHE" ]] && echo -e "iperf3: ${CYAN}${IPERF3_SERVER}${RESET}"
 [[ -n "$FOLLOW_SECONDS" ]] && echo -e "Follow: every ${CYAN}${FOLLOW_SECONDS}s${RESET}  (Ctrl-C to stop)"
+[[ -n "$WEBHOOK_URL" ]] && echo -e "Webhook: ${CYAN}${WEBHOOK_URL}${RESET}"
 echo ""
 
 # Fleet mode: query Prometheus directly — bypass per-interface local-log analysis
@@ -2210,9 +2251,15 @@ if [[ ${#IFACES[@]} -eq 0 ]]; then
   echo -e "${GREEN}No link state events found in the log window.${RESET}"
   echo ""
   if [[ -n "$FOLLOW_SECONDS" ]]; then
+    # Fire "cleared" for any ifaces that were flapping last cycle but aren't now
+    if [[ -n "$WEBHOOK_URL" ]]; then
+      for _pi in ${_FLAP_PREV_FLAPPING:-}; do
+        _send_webhook "$WEBHOOK_URL" "cleared" "$_pi"
+      done
+    fi
     echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
     sleep "$FOLLOW_SECONDS"
-    exec env _FLAP_FOLLOW_CHILD=1 "$0" "${_ORIG_ARGS[@]}"
+    exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="" "$0" "${_ORIG_ARGS[@]}"
   fi
   exit 0
 fi
@@ -2255,6 +2302,7 @@ for iface in "${IFACES[@]}"; do
     FLAPPING_FOUND=1
     (( FLAPPING_COUNT++ )) || true
     FLAPPING_IFACES+=("$iface")
+    FLAPPING_TRANSITIONS["$iface"]=$transitions
     echo -e "${RED}${BOLD}[FLAPPING]${RESET} ${BOLD}${iface}${RESET}"
     echo -e "  Transitions : ${RED}${transitions}${RESET}  |  Events: ${count}  |  Span: ${first_ts}–${last_ts} (${span_str})"
     if [[ "$VERBOSE" -eq 1 ]]; then
@@ -2347,10 +2395,37 @@ if [[ ${#FLAPPING_IFACES[@]} -gt 0 ]] && {
   done
 fi
 
+# ── Webhook state-change alerts ───────────────────────────────────────────────
+_FLAP_NEXT_FLAPPING=""
+if [[ -n "$WEBHOOK_URL" ]]; then
+  declare -A _prev_flapping_set=()
+  for _pi in ${_FLAP_PREV_FLAPPING:-}; do
+    _prev_flapping_set["$_pi"]=1
+  done
+
+  for _wi in "${FLAPPING_IFACES[@]}"; do
+    if [[ -z "${_prev_flapping_set[$_wi]:-}" ]]; then
+      _send_webhook "$WEBHOOK_URL" "flapping" "$_wi" "${FLAPPING_TRANSITIONS[$_wi]:-}"
+    fi
+  done
+
+  if [[ -n "$FOLLOW_SECONDS" ]]; then
+    declare -A _curr_flapping_set=()
+    for _wi in "${FLAPPING_IFACES[@]}"; do _curr_flapping_set["$_wi"]=1; done
+    for _pi in "${!_prev_flapping_set[@]}"; do
+      if [[ -z "${_curr_flapping_set[$_pi]:-}" ]]; then
+        _send_webhook "$WEBHOOK_URL" "cleared" "$_pi"
+      fi
+    done
+  fi
+
+  _FLAP_NEXT_FLAPPING="${FLAPPING_IFACES[*]:-}"
+fi
+
 if [[ -n "$FOLLOW_SECONDS" ]]; then
   echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
   sleep "$FOLLOW_SECONDS"
-  exec env _FLAP_FOLLOW_CHILD=1 "$0" "${_ORIG_ARGS[@]}"
+  exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="${_FLAP_NEXT_FLAPPING:-}" "$0" "${_ORIG_ARGS[@]}"
 fi
 _flap_what_next "$(( FLAPPING_FOUND ))"
 exit $(( FLAPPING_FOUND ))
