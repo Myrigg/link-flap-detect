@@ -954,12 +954,12 @@ run_wizard() {
 
   # Half-duplex
   if echo "$ethtool_out" | grep -qi "Duplex: Half"; then
-    findings+=("WARN"$'\t'"Half-duplex detected"$'\t'"Half-duplex causes collisions and link instability at high load"$'\t'"ethtool -s ${iface} speed 1000 duplex full autoneg off")
+    findings+=("WARN"$'\t'"Half-duplex detected"$'\t'"Half-duplex causes collisions and link instability at high load"$'\t'"Check switch port autoneg settings; if mismatch: ethtool -s ${iface} duplex full autoneg on")
   fi
 
   # Speed/duplex unreadable — autoneg failure or link down
   if [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]]; then
-    findings+=("CAUSE"$'\t'"Link speed unreadable — auto-negotiation failure"$'\t'"The NIC reports unknown speed and duplex, meaning it cannot determine link parameters. This usually means the link is physically down, auto-negotiation has completely failed, or the NIC/driver has faulted. Combined with high carrier changes, this is a strong indicator of physical layer failure."$'\t'"Try forcing speed: ethtool -s ${iface} speed 1000 duplex full autoneg off  or check cable/SFP/switch port autoneg settings")
+    findings+=("CAUSE"$'\t'"Link speed unreadable — auto-negotiation failure"$'\t'"The NIC reports unknown speed and duplex, meaning it cannot determine link parameters. This usually means the link is physically down, auto-negotiation has completely failed, or the NIC/driver has faulted. Combined with high carrier changes, this is a strong indicator of physical layer failure."$'\t'"Check cable/SFP and switch port autoneg; try: ethtool -s ${iface} autoneg on")
   fi
 
   # No physical link
@@ -1053,7 +1053,17 @@ run_wizard() {
      "$carrier_changes" -gt 500 ]] && (( _phys_indicators++ )) || true
   [[ "${_tx_drop_cause}" -eq 1 ]] && (( _phys_indicators++ )) || true
   if (( _phys_indicators >= 2 )); then
-    findings+=("CAUSE"$'\t'"Physical layer failure signature"$'\t'"Multiple indicators point to a physical layer fault: unknown speed negotiation, severe carrier instability (${carrier_changes:-?} transitions), and significant TX packet loss. This combination is characteristic of a damaged cable, failed SFP transceiver, or faulty switch port."$'\t'"1. Replace the patch cable  2. Try a different switch port  3. If SFP: swap the transceiver  4. Run: ethtool -d ${iface} for NIC register dump")
+    local -a _phys_parts=()
+    [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]] && \
+      _phys_parts+=("unknown speed negotiation")
+    [[ -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ && \
+       "$carrier_changes" -gt 500 ]] && \
+      _phys_parts+=("severe carrier instability (${carrier_changes} transitions)")
+    [[ "${_tx_drop_cause}" -eq 1 ]] && \
+      _phys_parts+=("significant TX packet loss")
+    local _phys_desc
+    _phys_desc=$(IFS=', '; echo "${_phys_parts[*]}")
+    findings+=("CAUSE"$'\t'"Physical layer failure signature"$'\t'"Multiple indicators point to a physical layer fault: ${_phys_desc}. This combination is characteristic of a damaged cable, failed SFP transceiver, or faulty switch port."$'\t'"1. Replace the patch cable  2. Try a different switch port  3. If SFP: swap the transceiver  4. Run: ethtool -d ${iface} for NIC register dump")
   fi
 
   # iperf3: TCP retransmits > 0
@@ -1357,7 +1367,9 @@ run_wizard() {
     "${dut_carrier_changes:-}" "${dut_operstate:-}" "${dut_speed:-}" \
     "${_tx_drop_cause:-0}" \
     "${rx_power_dbm:-}" "${tx_power_dbm:-}" \
-    "${lldp_peer_name:-}" "${lldp_peer_port:-}" "${_lldp_available:-0}"
+    "${lldp_peer_name:-}" "${lldp_peer_port:-}" "${_lldp_available:-0}" \
+    "${_iface_is_usb:-0}" "${_iface_usb_path:-}" "${_adv_drv_name:-}" \
+    "${usb_dmesg_out:-}" "${ncm_params_out:-}"
 
   # 8. Save report (strip ANSI already done in _rpt)
   printf '%s\n' "${report_lines[@]}" > "${REPORT_DIR}/${backup_id}.txt"
@@ -1373,6 +1385,11 @@ run_wizard() {
 #       rx_power_dbm tx_power_dbm (SFP DOM optical power in dBm, empty if unavailable)
 #       lldp_peer_name lldp_peer_port (empty if unknown)
 #       lldp_available (1 if lldpctl present, 0 otherwise)
+#       _iface_is_usb (1 if USB NIC, 0 otherwise)
+#       _iface_usb_path (sysfs device path, empty if not USB)
+#       _adv_drv_name (driver name from ethtool -i, empty if unavailable)
+#       usb_dmesg_out (USB-specific dmesg lines, empty if not USB)
+#       ncm_params_out (cdc_ncm module parameters, empty if N/A)
 run_fault_localization() {
   local iface="$1"
   local ethtool_i_out="$2"
@@ -1394,6 +1411,11 @@ run_fault_localization() {
   local lldp_peer_name="${18:-}"
   local lldp_peer_port="${19:-}"
   local lldp_available="${20:-0}"
+  local _iface_is_usb="${21:-0}"
+  local _iface_usb_path="${22:-}"
+  local _adv_drv_name="${23:-}"
+  local usb_dmesg_out="${24:-}"
+  local ncm_params_out="${25:-}"
 
   local SEP="════════════════════════════════════════════════════════════"
 

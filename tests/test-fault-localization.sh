@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–95, 96–99, 210–217
+# Tests covered: 83–95, 96–99, 210–218
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -733,4 +733,46 @@ if [[ $ok -eq 1 ]]; then
   pass "217: fault localization verdict 'Physical and driver both' (exit=$EXITCODE)"
 else
   fail "217: fault localization verdict 'Physical and driver both'" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 218: USB NIC fault localization says "driver limitation", not SUSPECT ──
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: cdc_ncm
+version: (unset)
+firmware-version: 6.17.9-14-generic
+EOF
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for enx001122334455:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: yes
+EOF
+echo "2" > "$wiz_dir/carrier_changes"
+echo "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1.2/net/enx001122334455" \
+  > "$wiz_dir/iface_usb_path"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                                          || ok=0
+# Layer 1 must NOT be SUSPECT for USB NIC with Unknown speed
+if echo "$OUT" | grep -i "Layer 1" | grep -qi "SUSPECT"; then ok=0; fi
+# Evidence should mention "driver limitation"
+echo "$OUT" | grep -qi "limitation\|driver limit"                               || ok=0
+# USB path should appear in fault localization output
+echo "$OUT" | grep -qi "USB path\|usb"                                          || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "218: USB NIC fault localization shows 'driver limitation' not SUSPECT (exit=$EXITCODE)"
+else
+  fail "218: USB NIC fault localization shows 'driver limitation' not SUSPECT" "exit=$EXITCODE\n$OUT"
 fi
