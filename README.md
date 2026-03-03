@@ -37,6 +37,7 @@ chmod +x flap
 - NetworkManager state changes (`link connected/disconnected`, `state change: ... -> activated`)
 - STP Topology Change Notifications from a packet capture (via tshark)
 - LACP synchronisation state changes from a packet capture (via tshark)
+- Correlated flapping across multiple interfaces — events on 2+ interfaces within the same 10-second window are flagged as `[CORRELATED]`, indicating a shared upstream cause (switch reboot, power event, broadcast storm)
 
 ## Usage
 
@@ -144,11 +145,11 @@ sudo ./flap -r 20260302-143000-eth0
 
 ## Log sources
 
-The script tries sources in this order:
+The script selects a source in this order:
 
-1. **journald** — used if `journalctl` is available (Ubuntu 20.04+)
-2. **PCAP file** — used when `-p` is passed (requires `tshark`)
-3. **Syslog files** — `/var/log/syslog` and `/var/log/kern.log` as a fallback
+1. **PCAP file** — used when `-p` is passed (requires `tshark`); takes priority over live log sources
+2. **journald** — default when `journalctl` is available (Ubuntu 20.04+)
+3. **Syslog files** — `/var/log/syslog` and `/var/log/kern.log` as a fallback when journald is absent
 
 ## Prometheus enrichment
 
@@ -301,6 +302,10 @@ ip link show
 ./flap -d eth0
 ```
 
+The wizard also runs **automatically** whenever flapping is detected — you do not need to
+pass `-d` explicitly. After reporting `[FLAPPING]` on any interface, the tool immediately
+runs the wizard on each affected interface in the same invocation.
+
 The wizard:
 1. **Snapshots network config files** before you act (netplan, NetworkManager, sysctl, etc.)
 2. **Collects interface state** — operstate, carrier changes, speed/duplex, autoneg
@@ -330,7 +335,7 @@ Backups are stored in `~/.local/share/link-flap/backups/` (override via `BACKUP_
 sudo ./flap -r 20260302-143000-eth0
 ```
 
-If restoration fails due to permissions the tool exits with code 1, prints a warning
+If restoration fails due to permissions the tool exits with code 2, prints a warning
 for each failed file, and shows the exact `sudo` command to retry.
 
 ## Exit codes
@@ -348,10 +353,28 @@ By default, virtual and container interfaces are silently ignored:
 
 Use `-i IFACE` to override and target a specific interface (including virtual ones).
 
-## testing the script is working
+## Running the test suite
 
 ```bash
 bash tests/run-tests.sh
 ```
 
-No root access or external dependencies required. The test suite uses synthetic log data and mocked tshark output — `tshark` does not need to be installed.
+No root access or external dependencies required. The test suite injects synthetic log data
+and mocked tshark/Prometheus/node_exporter/iperf3 output — none of those tools need to be
+installed for the offline tests to pass.
+
+When the test suite runs, `flap` prints a `WARNING: SYNTHETIC TEST DATA` banner so it is
+immediately obvious the results reflect injected data, not your real system.
+
+Individual feature suites can also be run in isolation:
+
+```bash
+bash tests/test-detection.sh      # log parsing, thresholds, flag validation
+bash tests/test-tshark.sh         # STP / LACP packet-capture analysis
+bash tests/test-prometheus.sh     # Prometheus metric enrichment
+bash tests/test-wizard.sh         # diagnostic wizard and backup / rollback
+bash tests/test-node-exporter.sh  # node_exporter metric enrichment
+bash tests/test-iperf3.sh         # iperf3 bandwidth enrichment
+bash tests/test-correlation.sh    # cross-interface correlation
+bash tests/test-live-system.sh    # live journald / syslog / sysfs reads
+```
