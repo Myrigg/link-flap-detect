@@ -1080,25 +1080,48 @@ run_wizard() {
   _rpt "${BOLD}Findings${RESET}"
 
   local cause_count=0 warn_count=0
-  local finding
+  local finding idx
+
+  # Pass 1 — at-a-glance summary table
+  _rpt ""
+  _rpt "  ${DIM}#  Level   Title${RESET}"
+  _rpt "  ${DIM}─  ──────  ───────────────────────────────────────────────────────${RESET}"
+  idx=0
   for finding in "${findings[@]}"; do
     local f_level f_title f_desc f_fix
     IFS=$'\t' read -r f_level f_title f_desc f_fix <<< "$finding"
+    (( idx++ )) || true
+    case "$f_level" in
+      CAUSE) _rpt "  ${idx}  ${RED}CAUSE${RESET}   ${f_title}" ;;
+      WARN)  _rpt "  ${idx}  ${YELLOW}WARN${RESET}    ${f_title}" ;;
+      INFO)  _rpt "  ${idx}  ${CYAN}INFO${RESET}    ${f_title}" ;;
+    esac
+  done
+
+  # Pass 2 — detailed blocks
+  _rpt ""
+  _rpt "  ${DIM}── Details ────────────────────────────────────────────────────${RESET}"
+  idx=0
+  for finding in "${findings[@]}"; do
+    local f_level f_title f_desc f_fix
+    IFS=$'\t' read -r f_level f_title f_desc f_fix <<< "$finding"
+    (( idx++ )) || true
+    _rpt ""
     case "$f_level" in
       CAUSE)
-        _rpt "  ${RED}[CAUSE]${RESET} ${BOLD}${f_title}${RESET}"
-        _rpt "          ${f_desc}"
-        _rpt "    ${GREEN}[FIX]${RESET}  ${f_fix}"
+        _rpt "  [${idx}] ${RED}[CAUSE]${RESET} ${BOLD}${f_title}${RESET}"
+        _rpt "      ${f_desc}"
+        _rpt "      ${GREEN}[FIX]${RESET}  ${f_fix}"
         (( cause_count++ )) || true
         ;;
       WARN)
-        _rpt "  ${YELLOW}[WARN]${RESET}  ${BOLD}${f_title}${RESET}"
-        _rpt "          ${f_desc}"
-        _rpt "    ${GREEN}[FIX]${RESET}  ${f_fix}"
+        _rpt "  [${idx}] ${YELLOW}[WARN]${RESET}  ${BOLD}${f_title}${RESET}"
+        _rpt "      ${f_desc}"
+        _rpt "      ${GREEN}[FIX]${RESET}  ${f_fix}"
         (( warn_count++ )) || true
         ;;
       INFO)
-        _rpt "  ${CYAN}[INFO]${RESET}  ${f_title}: ${f_desc}"
+        _rpt "  [${idx}] ${CYAN}[INFO]${RESET}  ${f_title}: ${f_desc}"
         ;;
     esac
   done
