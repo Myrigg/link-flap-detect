@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–90
+# Tests covered: 83–95
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -14,6 +14,11 @@
 #   88: DNS OK when resolv.conf + dig return a result
 #   89: DUT SUSPECT when DUT carrier_changes >> host
 #   90: Verdict names "PHYSICAL" when only Layer 1 is SUSPECT
+#   91: r8169 driver emits advisory in findings and fault localization
+#   92: tg3 driver emits advisory with source URL
+#   93: virtio_net driver emits INFO-level note (not WARN)
+#   94: igb driver emits no advisory (negative test)
+#   95: e1000e driver emits no advisory (negative test)
 #
 # All tests are fully offline — live network commands (ping, dig) are
 # mocked via the _wiz_cmd file mechanism in _LINK_FLAP_TEST_WIZARD_DIR.
@@ -287,4 +292,115 @@ if [[ $ok -eq 1 ]]; then
   pass "90: fault localization VERDICT names PHYSICAL when only Layer 1 is SUSPECT (exit=$EXITCODE)"
 else
   fail "90: fault localization VERDICT names PHYSICAL when only Layer 1 is SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 91: r8169 driver advisory in findings and fault localization ───────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: r8169
+version: 6.1.0-NAPI
+firmware-version: rtl8168g-2_0.0.1 03/26/13
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+echo "$OUT" | grep -qi "advisory"                            || ok=0
+echo "$OUT" | grep -qi "r8169"                               || ok=0
+echo "$OUT" | grep -qi "realtek.com"                         || ok=0
+echo "$OUT" | grep -qi "EEE"                                 || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "91: r8169 driver advisory shown with realtek.com source (exit=$EXITCODE)"
+else
+  fail "91: r8169 driver advisory shown with realtek.com source" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 92: tg3 driver advisory with kernel.org source URL ────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: tg3
+version: 3.137
+firmware-version: 5719-v1.39
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+echo "$OUT" | grep -qi "advisory"                            || ok=0
+echo "$OUT" | grep -qi "tg3"                                 || ok=0
+echo "$OUT" | grep -qi "kernel.org"                          || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "92: tg3 driver advisory shown with kernel.org source (exit=$EXITCODE)"
+else
+  fail "92: tg3 driver advisory shown with kernel.org source" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 93: virtio_net emits INFO-level note (not WARN) ───────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: virtio_net
+version: 1.0.0
+firmware-version: N/A
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+echo "$OUT" | grep -qi "virtio_net"                          || ok=0
+echo "$OUT" | grep -qi "migration\|hypervisor"               || ok=0
+echo "$OUT" | grep -qi "qemu.org"                            || ok=0
+# Should be INFO level, not a WARN or CAUSE
+echo "$OUT" | grep -qi "\[INFO\].*virtio\|\[INFO\].*driver note" || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "93: virtio_net emits INFO-level note with qemu.org source (exit=$EXITCODE)"
+else
+  fail "93: virtio_net emits INFO-level note with qemu.org source" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 94: igb driver emits no advisory (negative test) ──────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: igb
+version: 5.14.2-k
+firmware-version: 3.25.0
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+# No advisory should appear for igb
+echo "$OUT" | grep -qi "Advisory" && ok=0 || true
+
+if [[ $ok -eq 1 ]]; then
+  pass "94: igb driver emits no advisory (exit=$EXITCODE)"
+else
+  fail "94: igb driver emits no advisory" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 95: e1000e driver emits no advisory (negative test) ───────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: e1000e
+version: 3.8.7-NAPI
+firmware-version: 3.25.0
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                        || ok=0
+# No advisory should appear for e1000e
+echo "$OUT" | grep -qi "Advisory" && ok=0 || true
+
+if [[ $ok -eq 1 ]]; then
+  pass "95: e1000e driver emits no advisory (exit=$EXITCODE)"
+else
+  fail "95: e1000e driver emits no advisory" "exit=$EXITCODE\n$OUT"
 fi
