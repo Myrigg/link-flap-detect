@@ -26,6 +26,7 @@
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #   --fix         Auto-apply safe single-command fixes from wizard findings (prompts in TTY)
+#   -H HOST       Run on a remote machine over SSH (e.g. -H user@192.168.1.1)
 #   --reports     List and summarise saved wizard reports
 #   --log-file F  Append output to FILE instead of stdout (ANSI auto-disabled)
 #   --quiet       Suppress all stdout output; exit code still reflects flapping
@@ -72,6 +73,7 @@ LOG_FILE=""                  # --log-file: append output to file
 QUIET_MODE=0                 # --quiet: suppress all stdout
 FIX_MODE=0                   # --fix: auto-apply wizard fixes
 _SHOW_REPORTS=0              # --reports: list saved reports
+REMOTE_HOST=""               # -H: run on remote machine via SSH
 
 # ── JSON output accumulators ─────────────────────────────────────────────────
 # Populated throughout the script when JSON_MODE=1; serialised at exit.
@@ -427,7 +429,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
-while getopts ":w:t:i:p:m:n:b:d:r:f:W:jvh" opt; do
+while getopts ":w:t:i:p:m:n:b:d:r:f:W:H:jvh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
     t) FLAP_THRESHOLD="$OPTARG" ;;
@@ -441,12 +443,38 @@ while getopts ":w:t:i:p:m:n:b:d:r:f:W:jvh" opt; do
     f) FOLLOW_SECONDS="$OPTARG" ;;
     j) JSON_MODE=1              ;;
     W) WEBHOOK_URL="$OPTARG"; _WEBHOOK_URL_FROM_FLAG=1 ;;
+    H) REMOTE_HOST="$OPTARG"   ;;
     v) VERBOSE=1                ;;
     h) usage                    ;;
     :) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
     \?) echo "Unknown option: -$OPTARG" >&2; exit 1 ;;
   esac
 done
+
+# ── SSH remote execution (-H user@host) ─────────────────────────────────────
+if [[ -n "$REMOTE_HOST" ]]; then
+  # Validate host format (user@host or bare host/IP)
+  if [[ ! "$REMOTE_HOST" =~ ^[a-zA-Z0-9._@-]+$ ]]; then
+    echo "Error: -H: invalid host format '${REMOTE_HOST}'." >&2; exit 1
+  fi
+  if ! command -v ssh >/dev/null 2>&1; then
+    echo "Error: -H requires ssh but it is not installed." >&2; exit 1
+  fi
+  # Build remote args: everything except -H
+  _remote_args=()
+  for _ra in "${_ORIG_ARGS[@]}"; do
+    [[ "$_ra" == "-H" ]] && continue
+    [[ "$_ra" == "$REMOTE_HOST" ]] && continue
+    _remote_args+=("$_ra")
+  done
+  _remote_tmp="/tmp/flap-remote-$$"
+  scp -q "$0" "${REMOTE_HOST}:${_remote_tmp}" || {
+    echo "Error: -H: failed to copy script to ${REMOTE_HOST}." >&2; exit 1
+  }
+  # shellcheck disable=SC2029
+  ssh "$REMOTE_HOST" "bash '${_remote_tmp}' ${_remote_args[*]+"${_remote_args[*]}"}; _rc=\$?; rm -f '${_remote_tmp}'; exit \$_rc"
+  exit $?
+fi
 
 # When wizard mode is active, pre-filter events to the target interface
 [[ -n "$DIAG_IFACE" && -z "$IFACE_FILTER" ]] && IFACE_FILTER="$DIAG_IFACE"

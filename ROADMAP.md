@@ -127,8 +127,11 @@ Combined: `*/15 * * * * ./flap --log-file /var/log/link-flap.log --quiet`.
 across every `node_exporter` target. Detects flapping on all monitored hosts in one command.
 Also surfaces unreachable scrape targets.
 
-### SSH / remote host mode
-Add `-H user@host` to run against a remote machine over SSH. Copies the script to a temp path on the remote host, executes it there, and streams the output back. Most link flapping happens on servers you're not sitting at.
+### ~~SSH / remote host mode~~ ✓ Done
+`-H user@host` copies the script to the remote via `scp`, executes it with
+`ssh`, streams output back, and cleans up the temp file. Validates host format
+(rejects shell metacharacters) and checks for `ssh` availability. All other
+flags are forwarded to the remote invocation.
 
 ### ~~Report aggregation~~ ✓ Done
 `./flap --reports` lists all saved wizard reports with date, interface, cause
