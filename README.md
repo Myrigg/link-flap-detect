@@ -351,6 +351,9 @@ down — hosts that Prometheus can no longer reach.
 
 # Longer window — useful for overnight flapping
 ./flap -m http://prom-server:9090 --fleet -w 480
+
+# Follow mode — re-poll the fleet every 60 seconds (Ctrl-C to stop)
+./flap -m http://prom-server:9090 --fleet -f 60
 ```
 
 Virtual interfaces (`lo`, `veth*`, `docker*`, etc.) are filtered from fleet results by default,

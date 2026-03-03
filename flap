@@ -59,6 +59,9 @@ usage() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
+# Capture original args before any stripping so follow mode can re-exec intact.
+_ORIG_ARGS=("$@")
+
 # Pre-parse long options (getopts does not handle --foo).
 FLEET_MODE=0
 _REBUILT_ARGS=()
@@ -70,8 +73,6 @@ for _arg in "$@"; do
   fi
 done
 set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
-
-_ORIG_ARGS=("$@")
 while getopts ":w:t:i:p:m:n:b:d:r:f:vh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG" ;;
@@ -209,7 +210,7 @@ do_rollback() {
 
 # ── Temp file — cleaned up on exit ───────────────────────────────────────────
 TMPFILE=$(mktemp /tmp/link-flap-XXXXXX)
-trap 'rm -f "$TMPFILE"' EXIT
+trap 'rm -f "$TMPFILE"' EXIT INT TERM HUP
 
 if [[ -n "$ROLLBACK_ID" ]]; then do_rollback "$ROLLBACK_ID"; exit 0; fi
 
