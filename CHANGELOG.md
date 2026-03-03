@@ -4,6 +4,12 @@
 
 ### New features
 
+- **Findings section redesigned** — the wizard's Findings section now renders as a
+  two-part layout: an at-a-glance numbered summary table (`#  Level   Title`) followed
+  by numbered detail blocks, each separated by a blank line with a clear
+  title / description / `[FIX]` hierarchy. Previously all findings ran together as a
+  single wall of text.
+
 - **Layer 1 SFP DOM optical power** — `ethtool -m` is now called during every wizard
   run. RX optical power < −35 dBm raises SUSPECT with "remote SFP or fibre degraded";
   −30 to −35 dBm logs a marginal warning. TX power < −9 dBm raises SUSPECT with "local
