@@ -130,8 +130,10 @@ Also surfaces unreachable scrape targets.
 ### SSH / remote host mode
 Add `-H user@host` to run against a remote machine over SSH. Copies the script to a temp path on the remote host, executes it there, and streams the output back. Most link flapping happens on servers you're not sitting at.
 
-### Report aggregation
-Add `./flap --reports` to list and summarise all saved wizard reports in `~/.local/share/link-flap/reports/` — interface name, date, cause count, warn count — without opening each file individually.
+### ~~Report aggregation~~ ✓ Done
+`./flap --reports` lists all saved wizard reports with date, interface, cause
+count, and warning count in a table. Graceful message when no reports exist.
+Parses `[CAUSE]` and `[WARN]` markers from saved `.txt` report files.
 
 ### Prometheus exporter mode
 Add `--export PORT` to expose a `/metrics` endpoint. Emits gauge metrics for currently-flapping interfaces, transition counts, and wizard finding counts. Allows long-term trending in Grafana without an external scraper.

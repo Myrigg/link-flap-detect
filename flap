@@ -26,6 +26,7 @@
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #   --fix         Auto-apply safe single-command fixes from wizard findings (prompts in TTY)
+#   --reports     List and summarise saved wizard reports
 #   --log-file F  Append output to FILE instead of stdout (ANSI auto-disabled)
 #   --quiet       Suppress all stdout output; exit code still reflects flapping
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
@@ -70,6 +71,7 @@ JSON_MODE=0                  # set to 1 when -j is passed
 LOG_FILE=""                  # --log-file: append output to file
 QUIET_MODE=0                 # --quiet: suppress all stdout
 FIX_MODE=0                   # --fix: auto-apply wizard fixes
+_SHOW_REPORTS=0              # --reports: list saved reports
 
 # ── JSON output accumulators ─────────────────────────────────────────────────
 # Populated throughout the script when JSON_MODE=1; serialised at exit.
@@ -417,6 +419,7 @@ while [[ $# -gt 0 ]]; do
     --until)  UNTIL_INPUT="${2:-}"; shift ;;
     --events)   _EVENTS_QUERY="${2:-20}"; shift ;;
     --fix)      FIX_MODE=1 ;;
+    --reports)  _SHOW_REPORTS=1 ;;
     --log-file) LOG_FILE="${2:-}"; shift ;;
     --quiet)    QUIET_MODE=1 ;;
     *)          _REBUILT_ARGS+=("$1") ;;
@@ -536,6 +539,33 @@ if [[ -n "$_EVENTS_QUERY" ]]; then
     # Treat as a date prefix filter (e.g. "2026-03-01")
     grep "^${_EVENTS_QUERY}" "$EVENT_LOG" || echo "No events matching '${_EVENTS_QUERY}'."
   fi
+  exit 0
+fi
+
+# ── Report aggregation (--reports) ───────────────────────────────────────────
+if [[ "$_SHOW_REPORTS" -eq 1 ]]; then
+  shopt -s nullglob
+  _report_files=("${REPORT_DIR}"/*.txt)
+  shopt -u nullglob
+  if [[ ${#_report_files[@]} -eq 0 ]]; then
+    echo "No saved reports in ${REPORT_DIR}."
+    exit 0
+  fi
+  printf "%-24s  %-12s  %s  %s\n" "Date" "Interface" "Causes" "Warnings"
+  printf "%-24s  %-12s  %s  %s\n" "────────────────────────" "────────────" "──────" "────────"
+  for _rf in "${_report_files[@]}"; do
+    _fname=$(basename "$_rf" .txt)
+    # backup_id format: YYYYMMDD-HHMMSS-iface
+    _date="${_fname:0:8}"
+    _time="${_fname:9:6}"
+    _iface="${_fname:16}"
+    _pretty_date="${_date:0:4}-${_date:4:2}-${_date:6:2} ${_time:0:2}:${_time:2:2}:${_time:4:2}"
+    _causes=$(grep -c '^\[CAUSE\]\|^  \[.*\] \[CAUSE\]' "$_rf" 2>/dev/null || echo "0")
+    _warns=$(grep -c '^\[WARN\]\|^  \[.*\] \[WARN\]' "$_rf" 2>/dev/null || echo "0")
+    printf "%-24s  %-12s  %-6s  %s\n" "$_pretty_date" "$_iface" "$_causes" "$_warns"
+  done
+  echo ""
+  echo "${#_report_files[@]} report(s) in ${REPORT_DIR}"
   exit 0
 fi
 
