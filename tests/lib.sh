@@ -16,6 +16,7 @@
 #   - run_with_ne(), run_wizard_ne_test()
 #   - run_with_iperf3(), run_wizard_iperf3_test()
 #   - run_real_wizard_test()          — live-system wizard runner
+#   - run_fleet_test()                — fleet mode runner (canned Prometheus)
 
 # Guard: safe to source multiple times
 [[ -n "${_LINK_FLAP_LIB_LOADED:-}" ]] && return 0
@@ -158,4 +159,13 @@ run_real_wizard_test() {
   OUT=''; EXITCODE=0
   OUT=$(BACKUP_DIR="$TESTDIR/real-backups" REPORT_DIR="$TESTDIR/real-reports" \
         bash "$SCRIPT" -d "$iface" "$@" 2>&1) || EXITCODE=$?
+}
+
+# run_fleet_test PROM_ALL_JSON [SCRIPT_ARGS...]
+# Runs flap in fleet mode with a canned multi-result Prometheus JSON file.
+run_fleet_test() {
+  local prom_all="$1"; shift
+  OUT=''; EXITCODE=0
+  OUT=$(_LINK_FLAP_TEST_PROM_ALL="$prom_all" \
+        bash "$SCRIPT" -m http://fake-prom:9090 --fleet "$@" 2>&1) || EXITCODE=$?
 }

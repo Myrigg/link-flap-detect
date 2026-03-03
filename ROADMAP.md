@@ -8,6 +8,12 @@ Features are grouped by priority. Items within each tier are roughly ordered by 
 
 These turn `flap` from a run-once diagnostic into something you can leave running.
 
+### ~~Historical system load correlation~~ ✓ Done
+When `-m URL` is set and flapping is detected, the tool queries Prometheus for CPU idle %,
+memory available %, and load average **at the exact time flapping began** (not current values).
+Shown as a `[system @ HH:MM:SS]` enrichment block. The wizard raises `[CAUSE]` for CPU
+saturation (< 15% idle) and `[WARN]` for low memory (< 10% available) at flap time.
+
 ### Webhook alerts in follow mode
 Add `-W URL` to send a JSON payload to a Slack, Discord, or generic webhook when flapping is detected or clears in `-f` follow mode. Fires on state changes only — not on every poll cycle.
 
@@ -36,6 +42,11 @@ Add `--log-file FILE` to append timestamped output to a file instead of printing
 ---
 
 ## Tier 3 — Multi-host and integration
+
+### ~~Prometheus fleet scan~~ ✓ Done
+`--fleet` mode added. Pass `-m URL --fleet` to query Prometheus for carrier-change metrics
+across every `node_exporter` target. Detects flapping on all monitored hosts in one command.
+Also surfaces unreachable scrape targets.
 
 ### SSH / remote host mode
 Add `-H user@host` to run against a remote machine over SSH. Copies the script to a temp path on the remote host, executes it there, and streams the output back. Most link flapping happens on servers you're not sitting at.
