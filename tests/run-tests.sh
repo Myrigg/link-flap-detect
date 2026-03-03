@@ -70,6 +70,8 @@ source "$TESTS_DIR/test-follow-dedup.sh"
 source "$TESTS_DIR/test-json.sh"
 # shellcheck source=tests/test-event-log.sh
 source "$TESTS_DIR/test-event-log.sh"
+# shellcheck source=tests/test-bond.sh
+source "$TESTS_DIR/test-bond.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))

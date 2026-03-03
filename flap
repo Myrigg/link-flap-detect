@@ -611,6 +611,21 @@ if [[ -n "$ROLLBACK_ID" ]]; then do_rollback "$ROLLBACK_ID"; exit 0; fi
 
 # ── Diagnostic Wizard ─────────────────────────────────────────────────────────
 
+_get_bond_master() {
+  local iface="$1"
+  # Test hook: _LINK_FLAP_TEST_BOND_MASTERS="eth0=bond0,eth1=bond1"
+  if [[ -n "${_LINK_FLAP_TEST_BOND_MASTERS:-}" ]]; then
+    local _bm_pair
+    IFS=',' read -ra _bm_pairs <<< "$_LINK_FLAP_TEST_BOND_MASTERS"
+    for _bm_pair in "${_bm_pairs[@]}"; do
+      [[ "$_bm_pair" == "${iface}="* ]] && { echo "${_bm_pair#*=}"; return; }
+    done
+    return
+  fi
+  [[ -L "/sys/class/net/${iface}/master" ]] || return 0
+  basename "$(readlink -f "/sys/class/net/${iface}/master")" 2>/dev/null || true
+}
+
 _wiz_read() {
   local path="$1"
   if [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
@@ -742,6 +757,19 @@ run_wizard() {
     local dut_ethtool_out
     dut_ethtool_out=$(_wiz_cmd_dut dut_ethtool ethtool "$DUT_IFACE")
     dut_speed=$(echo "$dut_ethtool_out" | grep -i "Speed:" | awk '{print $2}' | head -1 || true)
+  fi
+
+  # Bond/LAG membership
+  local bond_master="" bond_carrier_changes="" bond_mode=""
+  bond_master=$(_get_bond_master "$iface")
+  if [[ -n "$bond_master" ]]; then
+    if [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+      bond_carrier_changes=$(cat "${_LINK_FLAP_TEST_WIZARD_DIR}/bond_carrier_changes" 2>/dev/null || true)
+      bond_mode=$(cat "${_LINK_FLAP_TEST_WIZARD_DIR}/bond_mode" 2>/dev/null || true)
+    else
+      bond_carrier_changes=$(cat "/sys/class/net/${bond_master}/carrier_changes" 2>/dev/null || true)
+      bond_mode=$(cat "/sys/class/net/${bond_master}/bonding/mode" 2>/dev/null || true)
+    fi
   fi
 
   # node_exporter metrics — uses _NE_METRICS_CACHE (fetch_node_exporter called at Step 3 entry)
@@ -973,6 +1001,19 @@ run_wizard() {
     fi
     if [[ "${speed:-}" == "Unknown!" || "${speed:-}" == "Unknown" ]]; then
       findings+=("INFO"$'\t'"USB NIC: Unknown speed is a driver limitation, not autoneg failure"$'\t'"Many USB CDC Ethernet adapters (${_adv_drv_name:-cdc_ncm}) do not expose link speed via ethtool. An Unknown speed result does not indicate cable or autoneg failure — it is a known limitation of USB NIC drivers. Use ip link show ${iface} to confirm the interface is UP/LOWER_UP."$'\t'"ip link show ${iface}")
+    fi
+  fi
+
+  # Bond/LAG member findings
+  if [[ -n "$bond_master" ]]; then
+    local _bond_mode_label=""
+    [[ -n "$bond_mode" ]] && _bond_mode_label=" (mode: ${bond_mode})"
+    if [[ -n "$bond_carrier_changes" && "$bond_carrier_changes" =~ ^[0-9]+$ && \
+          -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ ]] && \
+       (( carrier_changes > bond_carrier_changes * 3 && carrier_changes > 10 )); then
+      findings+=("WARN"$'\t'"Bond member instability"$'\t'"${iface} is a member of ${bond_master}${_bond_mode_label}. Member carrier changes (${carrier_changes}) vastly exceed the bond (${bond_carrier_changes}), indicating this member link is the problem — not the overall bond."$'\t'"Check cable/SFP on ${iface}; consider removing from ${bond_master} for isolation: ip link set ${iface} nomaster")
+    else
+      findings+=("INFO"$'\t'"Bond member of ${bond_master}"$'\t'"${iface} is a member of ${bond_master}${_bond_mode_label}. Bond carrier changes: ${bond_carrier_changes:-unknown}."$'\t'"Review bond status: cat /proc/net/bonding/${bond_master}")
     fi
   fi
 
@@ -2407,15 +2448,18 @@ for iface in "${IFACES[@]}"; do
     (( FLAPPING_COUNT++ )) || true
     FLAPPING_IFACES+=("$iface")
     FLAPPING_TRANSITIONS["$iface"]=$transitions
+    _bond_label=""
+    _bond_m=$(_get_bond_master "$iface")
+    [[ -n "$_bond_m" ]] && _bond_label="  ${DIM}(bond member of ${_bond_m})${RESET}"
 
     # Follow-mode dedup: if this interface was already flapping last cycle,
     # print a compact one-liner instead of the full enrichment block.
     if [[ -n "${_prev_flapping_set[$iface]:-}" && -n "$FOLLOW_SECONDS" ]]; then
       _prev_t="${_prev_transition_counts[$iface]:-?}"
-      echo -e "${YELLOW}${BOLD}[STILL FLAPPING]${RESET} ${BOLD}${iface}${RESET} — ${transitions} transitions (was ${_prev_t})"
+      echo -e "${YELLOW}${BOLD}[STILL FLAPPING]${RESET} ${BOLD}${iface}${RESET}${_bond_label} — ${transitions} transitions (was ${_prev_t})"
       echo ""
     else
-      echo -e "${RED}${BOLD}[FLAPPING]${RESET} ${BOLD}${iface}${RESET}"
+      echo -e "${RED}${BOLD}[FLAPPING]${RESET} ${BOLD}${iface}${RESET}${_bond_label}"
       echo -e "  Transitions : ${RED}${transitions}${RESET}  |  Events: ${count}  |  Span: ${first_ts}–${last_ts} (${span_str})"
       if [[ "$VERBOSE" -eq 1 ]]; then
         for el in "${event_lines[@]}"; do
