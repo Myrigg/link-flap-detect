@@ -177,51 +177,6 @@ _prompt_prom_url() {
   _save_config "PROM_URL" "$PROM_URL"
 }
 
-# _prompt_iperf3 — offer to install iperf3 and/or ask for server address (TTY only).
-_prompt_iperf3() {
-  [[ -t 1 ]] || return 0
-  [[ -n "${_LINK_FLAP_TEST_IPERF3:-}" ]] && return 0
-
-  if ! command -v iperf3 &>/dev/null; then
-    # Only offer install if user has expressed intent (server already set from config/flag)
-    [[ -z "$IPERF3_SERVER" ]] && return 0
-    printf "iperf3 is not installed. Install it now? [y/N] "
-    local yn=""; read -r yn 2>/dev/null || true; echo ""
-    if [[ "${yn,,}" == "y" ]]; then
-      if command -v apt-get &>/dev/null; then
-        sudo apt-get install -y iperf3
-      else
-        echo "Could not auto-install iperf3 — please install it manually." >&2
-        IPERF3_SERVER=""
-        return 0
-      fi
-    else
-      IPERF3_SERVER=""   # user declined; suppress iperf3 for this run
-      return 0
-    fi
-  fi
-
-  # iperf3 is now installed; prompt for server if not yet set
-  if [[ -z "$IPERF3_SERVER" ]]; then
-    printf "iperf3 server for bandwidth test (Enter to skip): "
-    local srv=""; read -r srv 2>/dev/null || true; echo ""
-    [[ -z "$srv" ]] && return 0
-    IPERF3_SERVER="$srv"
-    _save_config "IPERF3_SERVER" "$IPERF3_SERVER"
-  fi
-}
-
-# _prompt_iperf3_run — confirm before each iperf3 run when a server is known (TTY only).
-_prompt_iperf3_run() {
-  [[ -t 1 ]] || return 0
-  [[ -n "${_LINK_FLAP_TEST_IPERF3:-}" ]] && return 0
-  [[ -n "${_FLAP_FOLLOW_CHILD:-}" ]] && return 0
-  [[ -n "$IPERF3_SERVER" ]] || return 0
-  command -v iperf3 &>/dev/null || return 0
-  printf "Run iperf3 bandwidth test to %s? [y/N] " "$IPERF3_SERVER"
-  local yn=""; read -r -t 10 yn 2>/dev/null || true; echo ""
-  [[ "${yn,,}" == "y" ]] || IPERF3_SERVER=""
-}
 
 # ── Interactive wizard-first UX ───────────────────────────────────────────────
 
@@ -474,7 +429,6 @@ _load_config
 
 # Interactive prompts (all self-guard for TTY / test mode)
 _prompt_prom_url
-_prompt_iperf3
 
 # ── Validate numerics ─────────────────────────────────────────────────────────
 if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || \
@@ -2000,11 +1954,10 @@ fi
 
 # Probe node_exporter once; result cached for wizard and per-interface blocks below
 fetch_node_exporter || true
-_prompt_iperf3_run
-# In wizard mode, bind iperf3 to the interface being diagnosed so traffic
-# cannot silently route via a different NIC on multi-homed hosts.
-# Prefer IPv4; fall back to global/ULA IPv6; skip link-local (fe80:: unreachable).
+# In wizard mode: auto-detect local bind IP and remote peer IP for iperf3.
+# No user prompt needed — both ends are resolved from the interface.
 if [[ -n "$DIAG_IFACE" ]]; then
+  # Local bind IP: IPv4 preferred, fall back to global/ULA IPv6 (skip link-local)
   _iface_addr_raw=$(ip addr show "$DIAG_IFACE" 2>/dev/null || true)
   _iperf3_local_ip=$(echo "$_iface_addr_raw" \
     | grep -oP 'inet \K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
@@ -2013,6 +1966,22 @@ if [[ -n "$DIAG_IFACE" ]]; then
       | grep 'inet6' | grep -v 'scope link' \
       | grep -oP 'inet6 \K[0-9a-f:]+' | head -1 || true)
   fi
+
+  # Remote peer IP (only auto-set if not already configured via -b or config)
+  if [[ -z "$IPERF3_SERVER" ]]; then
+    # Try LLDP management IP first (most accurate — IP of the directly connected device)
+    if command -v lldpctl &>/dev/null; then
+      _lldp_peer_raw=$(lldpctl "$DIAG_IFACE" 2>/dev/null || true)
+      IPERF3_SERVER=$(echo "$_lldp_peer_raw" \
+        | grep -oP '(?i)mgmtip:\s*\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    fi
+    # Fall back to default gateway (next-hop router on this interface)
+    if [[ -z "$IPERF3_SERVER" ]]; then
+      IPERF3_SERVER=$(ip route show dev "$DIAG_IFACE" 2>/dev/null \
+        | awk '/^default/{print $3; exit}' || true)
+    fi
+  fi
+
   run_iperf3 "$DIAG_IFACE" "$_iperf3_local_ip" || true
 else
   run_iperf3 || true

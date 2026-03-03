@@ -82,9 +82,16 @@ Command-line flags take precedence over environment variables when both are set.
 
 ## Configuration
 
-`-m` and `-b` values are saved automatically to `~/.config/link-flap/config` (XDG-compliant). On the first interactive run without these flags set, flap will prompt you for them. Saved values are used silently on subsequent runs.
+`-m URL` and `-b SERVER` values are saved automatically to `~/.config/link-flap/config` (XDG-compliant). Saved values are used silently on subsequent runs.
 
-**Precedence:** CLI flag > config file > interactive prompt > disabled
+For `-m` (Prometheus): on the first interactive run without a saved URL, flap prompts for it.
+
+For `-b` (iperf3): if no server is set via flag or config, the wizard (`-d IFACE`) auto-discovers
+one from the diagnosed interface — LLDP management IP (`lldpctl`) first, then the default
+gateway. Auto-discovered IPs are not saved to config. If neither is available, iperf3 is
+silently skipped.
+
+**Precedence (iperf3):** `-b` flag > config file > LLDP MgmtIP > default gateway > skipped
 
 Passing a flag always wins and updates the saved value for next time. To clear a saved value, edit or delete `~/.config/link-flap/config`. This file is never touched by `--update`.
 
@@ -301,6 +308,10 @@ Pass the target server hostname or IP with `-b`:
 ```bash
 ./flap -b iperf3.example.com
 ```
+
+In wizard mode (`-d IFACE`), if no server is set via `-b` or config, flap auto-discovers one:
+LLDP management IP of the directly connected device first (requires `lldpctl`), then the
+default gateway for the interface. Auto-discovered IPs are not saved to config.
 
 For each flapping interface the tool runs the probe once (result cached) and shows a `[iperf3]`
 block below the `[FLAPPING]` line:

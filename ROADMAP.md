@@ -71,10 +71,19 @@ Append all detected flap events to `~/.local/share/link-flap/events.log` with IS
 ### ~~Persistent config + interactive prompts~~ ✓ Done
 `-m URL` and `-b SERVER` values are saved to `~/.config/link-flap/config` (XDG_CONFIG_HOME
 respected) on first use. On subsequent runs the saved values are loaded silently — no need
-to re-type server addresses. On the first interactive TTY run with values missing, flap
-prompts for them. CLI flags always win and are written back to config. `--update` never
-touches the config dir (it is outside the repo/script path). Test helper `run_with_config()`
-in `tests/lib.sh` redirects `XDG_CONFIG_HOME` to the temp dir so config tests are isolated.
+to re-type server addresses. For `-m`, flap prompts on the first interactive TTY run if not
+set. For `-b`, the interactive prompt was replaced with auto-discovery (see below). CLI flags
+always win and are written back to config. `--update` never touches the config dir. Test
+helper `run_with_config()` in `tests/lib.sh` redirects `XDG_CONFIG_HOME` to the temp dir so
+config tests are isolated.
+
+### ~~iperf3 server auto-discovery (LLDP / gateway)~~ ✓ Done
+Removed the interactive iperf3 server prompts (`_prompt_iperf3`, `_prompt_iperf3_run`). In
+wizard mode, if no server is configured via `-b` or config file, the wizard auto-discovers the
+remote peer: LLDP management IP (`lldpctl $IFACE`) first, then the default gateway
+(`ip route show dev $IFACE`). Auto-discovered IPs are not saved to config. iperf3 is silently
+skipped if neither source yields an address. Explicit `-b SERVER` and saved config values
+continue to work as before and take precedence over auto-discovery.
 
 ### Auto-apply fixes
 Add `--fix` flag to the wizard. When a `[CAUSE]` finding has a known, safe, single-command fix (EEE off, power control, autoneg), prompt for confirmation and apply it immediately rather than printing a command for the user to copy. Requires root for some fixes; print a clear `sudo` escalation if not already running as root.
