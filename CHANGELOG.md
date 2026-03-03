@@ -81,7 +81,7 @@
 
 ### Testing
 
-- 22 test suites, 143 tests total (up from 12 suites / ~80 tests).
+- 22 test suites, 160+ tests total (up from 12 suites / ~80 tests).
 - New test files: `test-webhook.sh`, `test-follow-dedup.sh`, `test-json.sh`,
   `test-event-log.sh`, `test-bond.sh`, `test-cron.sh`, `test-fix.sh`,
   `test-reports.sh`, `test-ssh.sh`, `test-exporter.sh`.
