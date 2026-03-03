@@ -74,6 +74,15 @@ Updates via `git pull` if installed as a clone, or re-downloads the script in-pl
 | `--fleet` | Fleet mode: query Prometheus for flapping across all monitored hosts (requires `-m`) | off |
 | `--dut IFACE` | Compare a device-under-test interface against the primary — the wizard identifies whether the fault is in the DUT or the host | (none) |
 | `--update` | Update flap to the latest version from GitHub and exit | |
+| `-j` | JSON output — emit a single JSON object instead of human-readable text | off |
+| `-W URL` | Webhook URL for flap/clear alerts in follow mode (Slack, Discord, or generic; saved to config) | (none) |
+| `-H HOST` | Run diagnostics on a remote machine over SSH (e.g. `-H user@192.168.1.1`) | (none) |
+| `--fix` | Auto-apply safe single-command fixes from wizard findings (prompts in TTY) | off |
+| `--export FILE` | Write Prometheus textfile metrics to FILE (for `node_exporter --collector.textfile`) | (none) |
+| `--reports` | List and summarise saved wizard reports | |
+| `--events [N\|all\|DATE]` | Show recent entries from the persistent event log (default: last 20) | |
+| `--log-file FILE` | Append output to FILE instead of stdout (ANSI auto-disabled) | (none) |
+| `--quiet` | Suppress all stdout output; exit code still reflects flapping | off |
 | `--since DATE` | Scan from DATE instead of using `-w`. Accepts `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS`. Date-only defaults to `00:00:00`. | (none) |
 | `--until DATE` | Scan up to DATE (default: now). Same format as `--since`. Date-only defaults to `23:59:59`. | now |
 
@@ -164,6 +173,56 @@ tshark -w /tmp/capture.pcap -a duration:60 -i eth0
 
 # From a date until now (no --until):
 ./flap -i eno6 --since "2026-02-27"
+```
+
+**JSON output for scripting / dashboards:**
+```bash
+./flap -j | jq '.summary'
+./flap -j -w 120 | python3 -m json.tool
+```
+
+**Webhook alerts in follow mode (Slack, Discord, or generic endpoint):**
+```bash
+./flap -f 30 -W https://hooks.slack.com/services/T.../B.../xxx
+```
+
+**Run diagnostics on a remote machine over SSH:**
+```bash
+./flap -H user@192.168.1.1 -d eth0
+./flap -H admin@switch-mgmt -w 120
+```
+
+**Auto-apply safe fixes found by the wizard:**
+```bash
+./flap -d eth0 --fix
+```
+
+**Scheduled monitoring via cron:**
+```bash
+# Log to file, suppress stdout:
+*/15 * * * * /usr/local/bin/flap --log-file /var/log/link-flap.log --quiet
+```
+
+**Export Prometheus metrics for node_exporter textfile collector:**
+```bash
+# One-shot (or via cron):
+./flap --export /var/lib/node_exporter/textfile/flap.prom --quiet
+
+# Cron example:
+*/15 * * * * /usr/local/bin/flap --export /var/lib/node_exporter/textfile/flap.prom --quiet
+```
+
+**List saved wizard reports:**
+```bash
+./flap --reports
+```
+
+**Query the persistent event log:**
+```bash
+./flap --events          # last 20 entries
+./flap --events 50       # last 50 entries
+./flap --events all      # everything
+./flap --events 2026-03  # filter by date prefix
 ```
 
 **Run the diagnostic wizard on eth0:**
@@ -438,6 +497,173 @@ Window: last 60m  |  Flap threshold: 3 transitions
   server3:9100  last scrape: 2026-03-03T10:00:00Z  —  context deadline exceeded
 ```
 
+## Webhook alerts (`-W URL`)
+
+In follow mode (`-f`), pass `-W URL` to send a JSON payload to a webhook endpoint whenever
+flapping is detected or clears. Compatible with Slack, Discord, and generic HTTP endpoints.
+
+```bash
+./flap -f 30 -W https://hooks.slack.com/services/T.../B.../xxx
+```
+
+Webhooks fire **on state changes only** — not on every poll cycle. A `FLAPPING` payload is
+sent when an interface starts flapping, and a `CLEARED` payload when it stabilises. The URL
+is saved to `~/.config/link-flap/config` for future runs.
+
+## Alert deduplication in follow mode
+
+When using `-f` (follow mode), flap tracks per-interface state across rescan cycles:
+
+- **`[FLAPPING]`** — first detection; full enrichment block + webhook
+- **`[STILL FLAPPING]`** — continued flapping; compact one-liner with transition count comparison; no webhook
+- **`[CLEARED]`** — previously flapping interface has stabilised; webhook fires
+
+This prevents noisy repeated output when a link remains down for many cycles. Without `-f`,
+deduplication is disabled — full output is always shown.
+
+## JSON output (`-j`)
+
+`-j` emits a single JSON object to stdout instead of human-readable text. Useful for
+dashboards, `jq` pipelines, and alerting scripts.
+
+```bash
+./flap -j | jq '.summary.flapping_interfaces'
+```
+
+**Schema (key fields):**
+```json
+{
+  "version": "...",
+  "timestamp": "...",
+  "config": { "window_minutes": 60, "flap_threshold": 3, "log_source": "..." },
+  "interfaces": [
+    { "name": "eth0", "status": "flapping", "transitions": 8,
+      "event_count": 9, "span": "10m 0s", "events": [...] }
+  ],
+  "correlation": { "correlated_groups": [...] },
+  "summary": { "flapping_count": 1, "flapping_interfaces": ["eth0"] }
+}
+```
+
+Validated with `python3 -m json.tool`. Combines with other flags: `-j --fleet`,
+`-j -H user@host`, `-j -d eth0`.
+
+## Persistent event log (`--events`)
+
+Every `[FLAPPING]` and `[CLEARED]` detection appends a tab-separated entry to
+`~/.local/share/link-flap/events.log`:
+
+```
+2026-03-03T14:23:05+0000	eth0	FLAPPING	transitions=8
+2026-03-03T14:38:10+0000	eth0	CLEARED
+```
+
+Query the log with `--events`:
+
+```bash
+./flap --events          # last 20 entries
+./flap --events 50       # last 50 entries
+./flap --events all      # everything
+./flap --events 2026-03  # filter by date prefix
+```
+
+Override the log path with `EVENT_LOG` environment variable.
+
+## Bond / LAG member awareness
+
+When a flapping interface is a member of a Linux bond (detected via
+`/sys/class/net/<iface>/master`), the `[FLAPPING]` line is annotated:
+
+```
+[FLAPPING] eth0  (bond member of bond0)
+```
+
+The wizard adds an `[INFO]` finding with bond mode and carrier changes. If the member's
+carrier changes vastly exceed the bond's — indicating the member link is the fault, not the
+overall bond — the finding is escalated to `[WARN]`.
+
+## Scheduled / cron mode (`--log-file`, `--quiet`)
+
+Two flags for unattended operation:
+
+- `--log-file FILE` — redirects output to a file (ANSI colours auto-disabled since stdout
+  is not a terminal)
+- `--quiet` — suppresses all stdout (exit code still reflects flapping)
+
+Combined for cron:
+
+```bash
+*/15 * * * * /usr/local/bin/flap --log-file /var/log/link-flap.log --quiet
+```
+
+## Auto-apply fixes (`--fix`)
+
+When the wizard (`-d IFACE`) finds `[CAUSE]` entries with safe single-command fixes,
+`--fix` offers to apply them:
+
+- **Interactive TTY** — prompts `Apply this fix now? [y/N]` per fix; escalates with `sudo`
+  if needed
+- **Non-interactive** — prints the fix command only, never auto-applies
+- **Multi-step instructions** (numbered lists) are skipped — only single commands are applied
+
+Each fix reports `[APPLIED]` or `[FAILED]` with a summary at the end.
+
+```bash
+./flap -d eth0 --fix
+```
+
+## Report aggregation (`--reports`)
+
+Lists all saved wizard reports with date, interface, cause count, and warning count:
+
+```bash
+./flap --reports
+```
+
+```
+Saved diagnostic reports:
+  Date         Interface  Causes  Warnings
+  ─────────    ─────────  ──────  ────────
+  2026-03-01   eth0       2       1
+  2026-03-02   enp3s0     0       1
+
+2 reports total
+```
+
+Reports are stored in `~/.local/share/link-flap/reports/` (override via `REPORT_DIR`).
+
+## SSH remote host (`-H HOST`)
+
+Run diagnostics on a remote machine. The script is copied over SSH, executed, and output
+is streamed back:
+
+```bash
+./flap -H user@192.168.1.1 -d eth0
+./flap -H admin@switch-mgmt -w 120 -v
+```
+
+Host format is validated (rejects shell metacharacters). All other flags are forwarded to
+the remote invocation. Requires `ssh` and `scp` to be installed locally.
+
+## Prometheus exporter (`--export FILE`)
+
+Writes Prometheus textfile-format metrics to a file for consumption by
+`node_exporter --collector.textfile`:
+
+```bash
+./flap --export /var/lib/node_exporter/textfile/flap.prom --quiet
+```
+
+**Metrics emitted:**
+
+| Metric | Type | Description |
+|---|---|---|
+| `link_flap_is_flapping{interface="..."}` | gauge | `1` if flapping, absent if not |
+| `link_flap_transitions_total{interface="..."}` | gauge | Transition count in scan window |
+| `link_flap_last_scan_timestamp` | gauge | Unix epoch of the scan |
+
+Designed for cron: `*/15 * * * * ./flap --export /path/flap.prom --quiet`.
+
 ## tshark / PCAP mode
 
 Requires `tshark` (`apt install tshark`). Analyses two protocol layers:
@@ -606,6 +832,8 @@ as the fault rather than anything upstream.
 | NIC reset/reinit in dmesg | `[WARN]` | NIC reset/reinit events |
 | RX/TX errors > 0 | `[WARN]` | RX/TX errors (node_exporter) |
 | Memory < 10% at flap time (`-m`) | `[WARN]` | Low memory at flap time |
+| Bond member with carrier changes >> bond's | `[WARN]` | Bond member link instability |
+| Interface is a bond member | `[INFO]` | Bond/LAG membership context |
 
 > Drop thresholds are **rate-based** when node_exporter provides
 > `node_network_transmit_packets_total` / `node_network_receive_packets_total`
@@ -680,16 +908,26 @@ immediately obvious the results reflect injected data, not your real system.
 Individual feature suites can also be run in isolation:
 
 ```bash
-bash tests/test-detection.sh      # log parsing, thresholds, flag validation
-bash tests/test-tshark.sh         # STP / LACP packet-capture analysis
-bash tests/test-prometheus.sh     # Prometheus metric enrichment
-bash tests/test-wizard.sh         # diagnostic wizard and backup / rollback
-bash tests/test-node-exporter.sh  # node_exporter metric enrichment
-bash tests/test-iperf3.sh         # iperf3 bandwidth enrichment
-bash tests/test-correlation.sh    # cross-interface correlation
-bash tests/test-live-system.sh    # live journald / syslog / sysfs reads
+bash tests/test-detection.sh          # log parsing, thresholds, flag validation
+bash tests/test-tshark.sh             # STP / LACP packet-capture analysis
+bash tests/test-prometheus.sh         # Prometheus metric enrichment
+bash tests/test-wizard.sh             # diagnostic wizard and backup / rollback
+bash tests/test-node-exporter.sh      # node_exporter metric enrichment
+bash tests/test-iperf3.sh             # iperf3 bandwidth enrichment
+bash tests/test-correlation.sh        # cross-interface correlation
+bash tests/test-live-system.sh        # live journald / syslog / sysfs reads
 bash tests/test-fleet.sh              # --fleet Prometheus fleet scan
 bash tests/test-sysload.sh            # historical system load correlation
 bash tests/test-wizard-enrichment.sh  # wizard severity tiers and synthesis
-bash tests/test-fault-localization.sh  # fault localization, layer analysis, --dut
+bash tests/test-fault-localization.sh # fault localization, layer analysis, --dut
+bash tests/test-webhook.sh            # -W webhook alerts in follow mode
+bash tests/test-follow-dedup.sh       # alert deduplication across cycles
+bash tests/test-json.sh               # -j JSON output mode
+bash tests/test-event-log.sh          # --events persistent event log
+bash tests/test-bond.sh               # bond/LAG member awareness
+bash tests/test-cron.sh               # --log-file / --quiet cron mode
+bash tests/test-fix.sh                # --fix auto-apply wizard fixes
+bash tests/test-reports.sh            # --reports report aggregation
+bash tests/test-ssh.sh                # -H SSH remote host mode
+bash tests/test-exporter.sh           # --export Prometheus textfile metrics
 ```

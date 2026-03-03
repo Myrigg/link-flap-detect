@@ -26,10 +26,72 @@
   remote device/port (peer port); check far-end SFP and fibre connectors" instead of
   the generic local-repair advice.
 
+- **GitHub Actions CI pipeline** — `.github/workflows/ci.yml` with ShellCheck lint,
+  full test suite, and VERSION consistency check on PRs. ShellCheck warnings fixed or
+  suppressed across `flap` and all test files.
+
+- **Webhook alerts in follow mode (`-W URL`)** — send a JSON payload to a Slack,
+  Discord, or generic webhook when flapping is detected or clears in `-f` follow mode.
+  Fires on state changes only — not on every poll cycle. URL is saved to config.
+
+- **Alert deduplication in follow mode** — per-interface flap state is tracked across
+  `-f` rescan cycles. Three output modes: `[FLAPPING]` for newly-detected flaps (full
+  enrichment), `[STILL FLAPPING]` for continued flaps (compact one-liner with previous
+  count), and `[CLEARED]` when a previously-flapping interface stabilises. Webhooks fire
+  only on new-flap and cleared transitions.
+
+- **JSON output mode (`-j`)** — emits a single JSON object to stdout with version,
+  timestamp, config, per-interface data (name, status, transitions, events with
+  epoch/state), correlation block, and summary. Human-readable output is suppressed.
+  Serialised via `python3` for correct escaping. Combines with `-d`, `--fleet`, `-H`.
+
+- **Persistent event log (`--events`)** — every FLAPPING detection appends a
+  tab-separated entry to `~/.local/share/link-flap/events.log`. `--events [N|all|DATE]`
+  queries the log: default last 20, `all` dumps everything, a date prefix filters by
+  date. `EVENT_LOG` env var overrides the path for test isolation.
+
+- **Bond / LAG member awareness** — when a flapping interface is a bond member
+  (`/sys/class/net/<iface>/master`), the `[FLAPPING]` line shows
+  `(bond member of bond0)`. The wizard adds an `[INFO]` finding with bond mode and
+  carrier changes, or escalates to `[WARN]` when the member's carrier changes vastly
+  exceed the bond's.
+
+- **Scheduled / cron mode (`--log-file`, `--quiet`)** — `--log-file FILE` appends
+  output to a file (ANSI auto-disabled since stdout is not a terminal). `--quiet`
+  suppresses all stdout (exit code still reflects flapping). Combined:
+  `*/15 * * * * ./flap --log-file /var/log/link-flap.log --quiet`.
+
+- **Auto-apply fixes (`--fix`)** — when the wizard finds `[CAUSE]` entries with safe
+  single-command fixes (EEE off, power control, autoneg), `--fix` offers to apply them.
+  Interactive TTY: prompts per fix with `[y/N]`. Non-interactive: prints command only.
+  Multi-step instructions are skipped. Failed commands suggest `sudo`.
+
+- **Report aggregation (`--reports`)** — lists all saved wizard reports with date,
+  interface, cause count, and warning count. Parses `[CAUSE]` and `[WARN]` markers
+  from saved `.txt` report files in `~/.local/share/link-flap/reports/`.
+
+- **SSH remote host mode (`-H HOST`)** — copies the script to the remote via `scp`,
+  executes with `ssh`, streams output back, and cleans up. Validates host format
+  (rejects shell metacharacters). All flags forwarded to the remote invocation.
+
+- **Prometheus exporter mode (`--export FILE`)** — writes Prometheus textfile-format
+  metrics: `link_flap_is_flapping` and `link_flap_transitions_total` (per interface),
+  plus `link_flap_last_scan_timestamp`. Designed for cron with
+  `node_exporter --collector.textfile`.
+
+### Testing
+
+- 22 test suites, 143 tests total (up from 12 suites / ~80 tests).
+- New test files: `test-webhook.sh`, `test-follow-dedup.sh`, `test-json.sh`,
+  `test-event-log.sh`, `test-bond.sh`, `test-cron.sh`, `test-fix.sh`,
+  `test-reports.sh`, `test-ssh.sh`, `test-exporter.sh`.
+
 ### Documentation
 
 - README: updated fault localization table to list SFP DOM and LLDP in the Physical
   layer row; updated example output to show `Remote:` line and new evidence format;
   added `ethtool` and `lldpctl` to requirements table.
-- ROADMAP: extended Fault Localization ✓ Done description to cover the new Layer 1
-  remote-end checks.
+- README: added all new options to the Options table, usage examples, and dedicated
+  sections for each new feature.
+- README: updated test suite listing with all 22 test files.
+- ROADMAP: all Tier 1–3 features marked as ✓ Done with implementation summaries.
