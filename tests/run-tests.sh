@@ -64,6 +64,8 @@ source "$TESTS_DIR/test-wizard-enrichment.sh"
 source "$TESTS_DIR/test-fault-localization.sh"
 # shellcheck source=tests/test-webhook.sh
 source "$TESTS_DIR/test-webhook.sh"
+# shellcheck source=tests/test-follow-dedup.sh
+source "$TESTS_DIR/test-follow-dedup.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))

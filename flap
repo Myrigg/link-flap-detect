@@ -2191,6 +2191,24 @@ FLAPPING_COUNT=0
 FLAPPING_IFACES=()
 declare -A FLAPPING_TRANSITIONS=()
 
+# ── Follow-mode deduplication state ──────────────────────────────────────────
+# Parse previous-cycle state for alert deduplication. _FLAP_PREV_FLAPPING is a
+# space-delimited list of interfaces that were flapping last cycle (already
+# exists). _FLAP_PREV_TRANSITIONS is comma-delimited iface=count pairs carrying
+# the transition counts from the previous cycle.
+declare -A _prev_flapping_set=()
+declare -A _prev_transition_counts=()
+for _pi in ${_FLAP_PREV_FLAPPING:-}; do
+  _prev_flapping_set["$_pi"]=1
+done
+IFS=',' read -ra _pt_pairs <<< "${_FLAP_PREV_TRANSITIONS:-}"
+for _ptp in "${_pt_pairs[@]}"; do
+  [[ "$_ptp" == *=* ]] || continue
+  _pt_iface="${_ptp%%=*}"
+  _pt_count="${_ptp#*=}"
+  _prev_transition_counts["$_pt_iface"]="$_pt_count"
+done
+
 # Get unique interfaces from TMPFILE
 mapfile -t IFACES < <(awk '{print $2}' "$TMPFILE" | sort -u)
 
@@ -2251,15 +2269,15 @@ if [[ ${#IFACES[@]} -eq 0 ]]; then
   echo -e "${GREEN}No link state events found in the log window.${RESET}"
   echo ""
   if [[ -n "$FOLLOW_SECONDS" ]]; then
-    # Fire "cleared" for any ifaces that were flapping last cycle but aren't now
-    if [[ -n "$WEBHOOK_URL" ]]; then
-      for _pi in ${_FLAP_PREV_FLAPPING:-}; do
-        _send_webhook "$WEBHOOK_URL" "cleared" "$_pi"
-      done
-    fi
+    # Print [CLEARED] and fire webhook for any ifaces that were flapping last cycle
+    for _pi in ${_FLAP_PREV_FLAPPING:-}; do
+      echo -e "${GREEN}${BOLD}[CLEARED]${RESET} ${BOLD}${_pi}${RESET} — link has stabilised"
+      echo ""
+      [[ -n "$WEBHOOK_URL" ]] && _send_webhook "$WEBHOOK_URL" "cleared" "$_pi"
+    done
     echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
     sleep "$FOLLOW_SECONDS"
-    exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="" "$0" "${_ORIG_ARGS[@]}"
+    exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="" _FLAP_PREV_TRANSITIONS="" "$0" "${_ORIG_ARGS[@]}"
   fi
   exit 0
 fi
@@ -2303,18 +2321,27 @@ for iface in "${IFACES[@]}"; do
     (( FLAPPING_COUNT++ )) || true
     FLAPPING_IFACES+=("$iface")
     FLAPPING_TRANSITIONS["$iface"]=$transitions
-    echo -e "${RED}${BOLD}[FLAPPING]${RESET} ${BOLD}${iface}${RESET}"
-    echo -e "  Transitions : ${RED}${transitions}${RESET}  |  Events: ${count}  |  Span: ${first_ts}–${last_ts} (${span_str})"
-    if [[ "$VERBOSE" -eq 1 ]]; then
-      for el in "${event_lines[@]}"; do
-        echo -e "$el"
-      done
+
+    # Follow-mode dedup: if this interface was already flapping last cycle,
+    # print a compact one-liner instead of the full enrichment block.
+    if [[ -n "${_prev_flapping_set[$iface]:-}" && -n "$FOLLOW_SECONDS" ]]; then
+      _prev_t="${_prev_transition_counts[$iface]:-?}"
+      echo -e "${YELLOW}${BOLD}[STILL FLAPPING]${RESET} ${BOLD}${iface}${RESET} — ${transitions} transitions (was ${_prev_t})"
+      echo ""
+    else
+      echo -e "${RED}${BOLD}[FLAPPING]${RESET} ${BOLD}${iface}${RESET}"
+      echo -e "  Transitions : ${RED}${transitions}${RESET}  |  Events: ${count}  |  Span: ${first_ts}–${last_ts} (${span_str})"
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        for el in "${event_lines[@]}"; do
+          echo -e "$el"
+        done
+      fi
+      show_prometheus_context "$iface"
+      show_system_load_at_flap "$iface" "$first_epoch"
+      show_node_exporter_context "$iface"
+      show_iperf3_context "$iface"
+      echo ""
     fi
-    show_prometheus_context "$iface"
-    show_system_load_at_flap "$iface" "$first_epoch"
-    show_node_exporter_context "$iface"
-    show_iperf3_context "$iface"
-    echo ""
   else
     if [[ "$VERBOSE" -eq 1 ]]; then
       echo -e "${YELLOW}${BOLD}[ACTIVE]${RESET}  ${BOLD}${iface}${RESET} — ${transitions} transition(s) in window (below threshold)"
@@ -2346,6 +2373,20 @@ if [[ -n "$PROM_URL" ]] && [[ "$_PROM_REACHED" -eq 0 ]]; then
     echo -e "${DIM}(Prometheus at ${PROM_URL} returned no data — verify connectivity)${RESET}"
   fi
   echo ""
+fi
+
+# ── Follow-mode: report cleared interfaces ───────────────────────────────────
+# In follow mode, any interface that was flapping last cycle but is NOT in the
+# current FLAPPING_IFACES list has cleared.
+if [[ -n "$FOLLOW_SECONDS" ]] && [[ ${#_prev_flapping_set[@]} -gt 0 ]]; then
+  declare -A _curr_flapping_set_dedup=()
+  for _wi in "${FLAPPING_IFACES[@]}"; do _curr_flapping_set_dedup["$_wi"]=1; done
+  for _pi in "${!_prev_flapping_set[@]}"; do
+    if [[ -z "${_curr_flapping_set_dedup[$_pi]:-}" ]]; then
+      echo -e "${GREEN}${BOLD}[CLEARED]${RESET} ${BOLD}${_pi}${RESET} — link has stabilised"
+      echo ""
+    fi
+  done
 fi
 
 # ── Cross-interface correlation ────────────────────────────────────────────────
@@ -2423,9 +2464,20 @@ if [[ -n "$WEBHOOK_URL" ]]; then
 fi
 
 if [[ -n "$FOLLOW_SECONDS" ]]; then
+  # Build transition counts for next cycle's deduplication
+  _FLAP_NEXT_TRANSITIONS=""
+  for _ti in "${FLAPPING_IFACES[@]}"; do
+    [[ -n "$_FLAP_NEXT_TRANSITIONS" ]] && _FLAP_NEXT_TRANSITIONS+=","
+    _FLAP_NEXT_TRANSITIONS+="${_ti}=${FLAPPING_TRANSITIONS[$_ti]}"
+  done
+  # Always pass the current flapping list (even without webhooks)
+  [[ -z "${_FLAP_NEXT_FLAPPING:-}" ]] && _FLAP_NEXT_FLAPPING="${FLAPPING_IFACES[*]:-}"
   echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
   sleep "$FOLLOW_SECONDS"
-  exec env _FLAP_FOLLOW_CHILD=1 _FLAP_PREV_FLAPPING="${_FLAP_NEXT_FLAPPING:-}" "$0" "${_ORIG_ARGS[@]}"
+  exec env _FLAP_FOLLOW_CHILD=1 \
+    _FLAP_PREV_FLAPPING="${_FLAP_NEXT_FLAPPING:-}" \
+    _FLAP_PREV_TRANSITIONS="${_FLAP_NEXT_TRANSITIONS:-}" \
+    "$0" "${_ORIG_ARGS[@]}"
 fi
 _flap_what_next "$(( FLAPPING_FOUND ))"
 exit $(( FLAPPING_FOUND ))
