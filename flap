@@ -27,6 +27,7 @@
 #   -h            Show this help
 #   --fix         Auto-apply safe single-command fixes from wizard findings (prompts in TTY)
 #   -H HOST       Run on a remote machine over SSH (e.g. -H user@192.168.1.1)
+#   --export FILE Write Prometheus textfile metrics to FILE (for node_exporter textfile collector)
 #   --reports     List and summarise saved wizard reports
 #   --log-file F  Append output to FILE instead of stdout (ANSI auto-disabled)
 #   --quiet       Suppress all stdout output; exit code still reflects flapping
@@ -74,6 +75,7 @@ QUIET_MODE=0                 # --quiet: suppress all stdout
 FIX_MODE=0                   # --fix: auto-apply wizard fixes
 _SHOW_REPORTS=0              # --reports: list saved reports
 REMOTE_HOST=""               # -H: run on remote machine via SSH
+EXPORT_FILE=""               # --export: write Prometheus metrics to file
 
 # ── JSON output accumulators ─────────────────────────────────────────────────
 # Populated throughout the script when JSON_MODE=1; serialised at exit.
@@ -421,6 +423,7 @@ while [[ $# -gt 0 ]]; do
     --until)  UNTIL_INPUT="${2:-}"; shift ;;
     --events)   _EVENTS_QUERY="${2:-20}"; shift ;;
     --fix)      FIX_MODE=1 ;;
+    --export)   EXPORT_FILE="${2:-}"; shift ;;
     --reports)  _SHOW_REPORTS=1 ;;
     --log-file) LOG_FILE="${2:-}"; shift ;;
     --quiet)    QUIET_MODE=1 ;;
@@ -2731,6 +2734,23 @@ if [[ -z "${_LINK_FLAP_TEST_INPUT:-}" ]] || [[ "${EVENT_LOG}" == */test-* ]]; th
     mkdir -p "$(dirname "$EVENT_LOG")"
     printf '%s\t%s\tFLAPPING\ttransitions=%s\n' "$_el_ts" "$_el_iface" "$_el_t" >> "$EVENT_LOG"
   done
+fi
+
+# ── Prometheus textfile export (--export) ────────────────────────────────────
+if [[ -n "$EXPORT_FILE" ]]; then
+  {
+    echo "# HELP link_flap_is_flapping Whether the interface is currently flapping (1=yes, 0=no)."
+    echo "# TYPE link_flap_is_flapping gauge"
+    echo "# HELP link_flap_transitions_total Number of link state transitions detected in the scan window."
+    echo "# TYPE link_flap_transitions_total gauge"
+    echo "# HELP link_flap_last_scan_timestamp Unix timestamp of the last scan."
+    echo "# TYPE link_flap_last_scan_timestamp gauge"
+    for _ex_iface in "${FLAPPING_IFACES[@]+"${FLAPPING_IFACES[@]}"}"; do
+      echo "link_flap_is_flapping{interface=\"${_ex_iface}\"} 1"
+      echo "link_flap_transitions_total{interface=\"${_ex_iface}\"} ${FLAPPING_TRANSITIONS[$_ex_iface]:-0}"
+    done
+    echo "link_flap_last_scan_timestamp $(date +%s)"
+  } > "$EXPORT_FILE"
 fi
 
 if [[ -n "$FOLLOW_SECONDS" ]]; then

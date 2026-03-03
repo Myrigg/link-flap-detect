@@ -138,5 +138,8 @@ flags are forwarded to the remote invocation.
 count, and warning count in a table. Graceful message when no reports exist.
 Parses `[CAUSE]` and `[WARN]` markers from saved `.txt` report files.
 
-### Prometheus exporter mode
-Add `--export PORT` to expose a `/metrics` endpoint. Emits gauge metrics for currently-flapping interfaces, transition counts, and wizard finding counts. Allows long-term trending in Grafana without an external scraper.
+### ~~Prometheus exporter mode~~ ✓ Done
+`--export FILE` writes Prometheus textfile-format metrics to a file for
+`node_exporter --collector.textfile`. Emits `link_flap_is_flapping`,
+`link_flap_transitions_total` (per interface), and `link_flap_last_scan_timestamp`.
+Designed for cron: `*/15 * * * * ./flap --export /var/lib/node_exporter/flap.prom --quiet`.

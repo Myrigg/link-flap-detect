@@ -80,6 +80,8 @@ source "$TESTS_DIR/test-fix.sh"
 source "$TESTS_DIR/test-reports.sh"
 # shellcheck source=tests/test-ssh.sh
 source "$TESTS_DIR/test-ssh.sh"
+# shellcheck source=tests/test-exporter.sh
+source "$TESTS_DIR/test-exporter.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))
