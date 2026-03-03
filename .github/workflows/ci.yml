@@ -28,7 +28,6 @@ jobs:
         run: bash tests/run-tests.sh
 
   version-check:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -52,7 +52,7 @@ Severity tiers for carrier_changes (>20 WARN, >500 CAUSE), TX/RX drop counts (>1
 synthesis CAUSE when ≥ 2 indicators are present. Interface State display annotates raw
 values with inline context hints.
 
-### Webhook alerts in follow mode
+### ~~Webhook alerts in follow mode~~ ✓ Done
 Add `-W URL` to send a JSON payload to a Slack, Discord, or generic webhook when flapping is detected or clears in `-f` follow mode. Fires on state changes only — not on every poll cycle.
 
 ### ~~Alert deduplication in follow mode~~ ✓ Done

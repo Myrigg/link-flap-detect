@@ -12,14 +12,28 @@
 #   - Idempotent — safe to run repeatedly
 #
 # Individual test files can also be run in isolation:
-#   bash tests/test-detection.sh
-#   bash tests/test-tshark.sh
-#   bash tests/test-prometheus.sh
-#   bash tests/test-wizard.sh
-#   bash tests/test-node-exporter.sh
-#   bash tests/test-iperf3.sh
+#   bash tests/test-bond.sh
 #   bash tests/test-correlation.sh
+#   bash tests/test-cron.sh
+#   bash tests/test-detection.sh
+#   bash tests/test-event-log.sh
+#   bash tests/test-exporter.sh
+#   bash tests/test-fault-localization.sh
+#   bash tests/test-fix.sh
+#   bash tests/test-fleet.sh
+#   bash tests/test-follow-dedup.sh
+#   bash tests/test-iperf3.sh
+#   bash tests/test-json.sh
 #   bash tests/test-live-system.sh
+#   bash tests/test-node-exporter.sh
+#   bash tests/test-prometheus.sh
+#   bash tests/test-reports.sh
+#   bash tests/test-ssh.sh
+#   bash tests/test-sysload.sh
+#   bash tests/test-tshark.sh
+#   bash tests/test-webhook.sh
+#   bash tests/test-wizard-enrichment.sh
+#   bash tests/test-wizard.sh
 #
 # Usage:
 #   bash tests/run-tests.sh

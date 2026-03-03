@@ -45,6 +45,10 @@
 
 set -euo pipefail
 
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "Error: bash 4+ required (found ${BASH_VERSION})." >&2; exit 1
+fi
+
 VERSION="2026.03.03"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -426,6 +430,7 @@ while [[ $# -gt 0 ]]; do
     --export)   EXPORT_FILE="${2:-}"; shift ;;
     --reports)  _SHOW_REPORTS=1 ;;
     --log-file) LOG_FILE="${2:-}"; shift ;;
+    --version)  echo "$VERSION"; exit 0 ;;
     --quiet)    QUIET_MODE=1 ;;
     *)          _REBUILT_ARGS+=("$1") ;;
   esac
@@ -512,7 +517,7 @@ if [[ -n "$IPERF3_SERVER" ]] && [[ -z "${_LINK_FLAP_TEST_IPERF3:-}" ]] && \
   echo "Error: -b requires iperf3 (not found). Install with: apt install iperf3" >&2; exit 1
 fi
 if [[ -n "$FOLLOW_SECONDS" ]] && \
-   ( ! [[ "$FOLLOW_SECONDS" =~ ^[0-9]+$ ]] || [[ "$FOLLOW_SECONDS" -lt 1 ]] ); then
+   { ! [[ "$FOLLOW_SECONDS" =~ ^[0-9]+$ ]] || [[ "$FOLLOW_SECONDS" -lt 1 ]]; }; then
   echo "Error: -f must be a positive integer (seconds)." >&2; exit 1
 fi
 if [[ -n "$NODE_EXPORTER_URL" ]] && \
