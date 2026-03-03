@@ -61,6 +61,7 @@ chmod +x flap
 | `-f SECONDS` | Follow mode: re-run every N seconds until Ctrl-C | (off) |
 | `-v` | Verbose — show every individual up/down event | off |
 | `-h` | Show help | |
+| `--fleet` | Fleet mode: query Prometheus for flapping across all monitored hosts (requires `-m`) | off |
 
 Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRESHOLD`, `IFACE_FILTER`.
 Command-line flags take precedence over environment variables when both are set.
@@ -282,6 +283,102 @@ If the server is unreachable or the test fails the section is silently omitted.
     Retransmits   : 0
 ```
 
+## System load correlation
+
+When a flapping interface is detected and `-m URL` is configured, the tool queries Prometheus
+for system resource metrics **at the exact moment flapping began** — not current values, but
+historical data from when the event occurred. This answers the question: *"Was the system
+overloaded when this link dropped?"*
+
+Requires Prometheus scraping `node_exporter` on the monitored machine. Three metrics are
+queried at `first_epoch` (the timestamp of the first flap event):
+
+| Metric | PromQL | Threshold |
+|---|---|---|
+| CPU idle % | `avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))*100` | Red if < 15%, yellow if < 30% |
+| Memory available % | `node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100` | Yellow if < 10% |
+| Load average (1m) | `node_load1` | Shown for reference |
+
+The `[system @ HH:MM:SS]` block appears below each `[FLAPPING]` line:
+
+```
+[FLAPPING] eth0
+  Transitions : 6  |  Events: 7  |  Span: 02:47:12–02:52:48 (5m 36s)
+  [Prometheus]
+    Current state   : UP
+    Carrier changes : 6 in last 60m
+  [system @ 02:47:12]
+    CPU idle        : 4.2%
+    Memory available: 87.3%
+    Load avg (1m)   : 0.42
+```
+
+The **diagnostic wizard** (`-d IFACE`) also checks these metrics and raises findings:
+
+- `[CAUSE]` if CPU idle was < 15% at flap time — system was CPU-saturated
+- `[WARN]` if CPU idle was 15–30% — elevated load may have delayed NIC interrupt processing
+- `[WARN]` if memory available was < 10% — memory pressure can cause driver buffer exhaustion
+
+If Prometheus is unreachable or has no data for these metrics the block is silently omitted.
+
+## Fleet mode (`--fleet`)
+
+Fleet mode uses Prometheus as the primary data source to detect link flapping across an entire
+fleet of monitored hosts — all in a single command.
+
+**Requirements:**
+- A running Prometheus server scraping [node_exporter](https://github.com/prometheus/node_exporter) on each host
+- `curl` installed locally
+- Pass the Prometheus base URL with `-m`
+
+```bash
+./flap -m http://prom-server:9090 --fleet
+```
+
+For each `node_exporter` instance that Prometheus scrapes, the tool queries carrier-change
+metrics across the scan window. Any device with carrier changes ≥ the flap threshold is
+reported as `[FLAPPING]`, with the host:device pair, carrier count, current link state, and
+RX/TX error rates.
+
+After the flap report, a `[UNREACHABLE TARGETS]` section lists any scrape targets currently
+down — hosts that Prometheus can no longer reach.
+
+**Combine with other flags:**
+
+```bash
+# Only report on a specific device name across all hosts
+./flap -m http://prom-server:9090 --fleet -i eth0
+
+# Longer window — useful for overnight flapping
+./flap -m http://prom-server:9090 --fleet -w 480
+```
+
+Virtual interfaces (`lo`, `veth*`, `docker*`, etc.) are filtered from fleet results by default,
+just as they are in local scan mode.
+
+**Example output:**
+
+```
+Link Flap Detector — fleet mode
+Prometheus: http://prom-server:9090
+Window: last 60m  |  Flap threshold: 3 transitions
+
+[FLAPPING]  server1:9100:eth0
+  Carrier changes : 8 in last 60m
+  Current state   : DOWN
+  RX errors       : 1.20/min
+  TX errors       : 0.00/min
+
+[FLAPPING]  server2:9100:ens3
+  Carrier changes : 5 in last 60m
+  Current state   : UP
+  RX errors       : 0.00/min
+  TX errors       : 0.00/min
+
+[UNREACHABLE TARGETS]
+  server3:9100  last scrape: 2026-03-03T10:00:00Z  —  context deadline exceeded
+```
+
 ## tshark / PCAP mode
 
 Requires `tshark` (`apt install tshark`). Analyses two protocol layers:
@@ -377,4 +474,6 @@ bash tests/test-node-exporter.sh  # node_exporter metric enrichment
 bash tests/test-iperf3.sh         # iperf3 bandwidth enrichment
 bash tests/test-correlation.sh    # cross-interface correlation
 bash tests/test-live-system.sh    # live journald / syslog / sysfs reads
+bash tests/test-fleet.sh          # --fleet Prometheus fleet scan
+bash tests/test-sysload.sh        # historical system load correlation
 ```

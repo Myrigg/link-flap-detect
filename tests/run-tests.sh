@@ -54,6 +54,10 @@ source "$TESTS_DIR/test-iperf3.sh"
 source "$TESTS_DIR/test-correlation.sh"
 # shellcheck source=tests/test-live-system.sh
 source "$TESTS_DIR/test-live-system.sh"
+# shellcheck source=tests/test-fleet.sh
+source "$TESTS_DIR/test-fleet.sh"
+# shellcheck source=tests/test-sysload.sh
+source "$TESTS_DIR/test-sysload.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))

@@ -22,6 +22,7 @@
 #   -f SECONDS    Follow mode: re-run every N seconds (Ctrl-C to stop)
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
+#   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
 #
 # Environment overrides (same as flags):
 #   WINDOW_MINUTES, FLAP_THRESHOLD, IFACE_FILTER
@@ -58,6 +59,18 @@ usage() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
+# Pre-parse long options (getopts does not handle --foo).
+FLEET_MODE=0
+_REBUILT_ARGS=()
+for _arg in "$@"; do
+  if [[ "$_arg" == "--fleet" ]]; then
+    FLEET_MODE=1
+  else
+    _REBUILT_ARGS+=("$_arg")
+  fi
+done
+set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
+
 _ORIG_ARGS=("$@")
 while getopts ":w:t:i:p:m:n:b:d:r:f:vh" opt; do
   case $opt in
@@ -107,6 +120,9 @@ if [[ -n "$NODE_EXPORTER_URL" ]] && \
    [[ "$NODE_EXPORTER_URL" != "off" ]] && \
    ! [[ "$NODE_EXPORTER_URL" =~ ^https?:// ]]; then
   echo "Error: -n must be 'off' or a URL starting with http:// or https://" >&2; exit 1
+fi
+if [[ "$FLEET_MODE" -eq 1 ]] && [[ -z "$PROM_URL" ]]; then
+  echo "Error: --fleet requires -m URL (Prometheus base URL)." >&2; exit 1
 fi
 
 # ── Backup & Rollback ─────────────────────────────────────────────────────────
@@ -326,7 +342,38 @@ run_wizard() {
     findings+=("WARN"$'\t'"TCP retransmits during iperf3 test"$'\t'"${iperf3_retransmits} retransmits in 5s test to ${IPERF3_SERVER} — congestion or packet loss"$'\t'"Test longer: iperf3 -c ${IPERF3_SERVER} -t 30; check switch port buffers")
   fi
 
-  # 5. Pattern analysis — use TMPFILE events for the interface
+  # 5. Historical system load at flap time (Prometheus, if configured)
+  if [[ -n "$PROM_URL" || -n "${_LINK_FLAP_TEST_PROM:-}" ]]; then
+    local _wiz_first_epoch=""
+    if [[ -f "$TMPFILE" ]]; then
+      _wiz_first_epoch=$(awk -v ifc="$iface" '$2==ifc {print $1; exit}' "$TMPFILE" 2>/dev/null || true)
+    fi
+    if [[ -n "$_wiz_first_epoch" ]]; then
+      local _wiz_cpu _wiz_mem
+      _wiz_cpu=$(prom_query_at \
+        'avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))*100' "$_wiz_first_epoch")
+      _wiz_mem=$(prom_query_at \
+        'node_memory_MemAvailable_bytes/node_memory_MemTotal_bytes*100' "$_wiz_first_epoch")
+      if [[ -n "$_wiz_cpu" ]]; then
+        local _wiz_cpu_int
+        _wiz_cpu_int=$(printf "%.0f" "$_wiz_cpu")
+        if (( _wiz_cpu_int < 15 )); then
+          findings+=("CAUSE"$'\t'"CPU saturation at flap time"$'\t'"CPU idle was ${_wiz_cpu_int}% when flapping began — system was heavily loaded, which can starve NIC driver interrupt handling"$'\t'"Investigate with: top -b -n1 | head -20")
+        elif (( _wiz_cpu_int < 30 )); then
+          findings+=("WARN"$'\t'"High CPU load at flap time"$'\t'"CPU idle was ${_wiz_cpu_int}% when flapping began — above-normal load may have delayed NIC interrupt processing"$'\t'"Check: top, htop, or systemd-analyze blame")
+        fi
+      fi
+      if [[ -n "$_wiz_mem" ]]; then
+        local _wiz_mem_int
+        _wiz_mem_int=$(printf "%.0f" "$_wiz_mem")
+        if (( _wiz_mem_int < 10 )); then
+          findings+=("WARN"$'\t'"Low memory at flap time"$'\t'"Only ${_wiz_mem_int}% memory was available when flapping began — memory pressure can cause driver buffer exhaustion"$'\t'"Check: free -h; consider adding swap or reducing memory consumers")
+        fi
+      fi
+    fi
+  fi
+
+  # 6. Pattern analysis — use TMPFILE events for the interface
   local -a iface_events=()
   if [[ -f "$TMPFILE" ]]; then
     mapfile -t iface_events < <(grep -F -- " ${iface} " "$TMPFILE" | sort -n 2>/dev/null || true)
@@ -547,6 +594,158 @@ if r: print(r[0]['value'][1])
   fi
 }
 
+prom_query_at() {
+  # Query Prometheus instant API at a specific Unix epoch timestamp.
+  # Returns the first result value, or empty string if no data.
+  # Uses _LINK_FLAP_TEST_PROM for offline testing (same hook as prom_query).
+  local query="$1" epoch="$2"
+  local response
+  if [[ -n "${_LINK_FLAP_TEST_PROM:-}" ]]; then
+    response=$(cat "$_LINK_FLAP_TEST_PROM")
+  else
+    response=$(curl -sf -G "${PROM_URL}/api/v1/query" \
+      --data-urlencode "query=$query" \
+      --data-urlencode "time=$epoch" \
+      --max-time 5 2>/dev/null) || return 0
+  fi
+  if command -v jq &>/dev/null; then
+    echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null
+  else
+    python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+r=d.get('data',{}).get('result',[])
+if r: print(r[0]['value'][1])
+" <<< "$response" 2>/dev/null
+  fi
+}
+
+prom_query_all() {
+  # Query Prometheus instant API; return all results as "instance:device VALUE" lines.
+  # Used by fleet mode to get metrics across every monitored host.
+  # _LINK_FLAP_TEST_PROM_ALL: path to a canned JSON response file (test hook).
+  local query="$1"
+  local response
+  if [[ -n "${_LINK_FLAP_TEST_PROM_ALL:-}" ]]; then
+    response=$(cat "$_LINK_FLAP_TEST_PROM_ALL")
+  else
+    response=$(curl -sf -G "${PROM_URL}/api/v1/query" \
+      --data-urlencode "query=$query" \
+      --max-time 5 2>/dev/null) || return 0
+  fi
+  if command -v jq &>/dev/null; then
+    echo "$response" | jq -r '
+      .data.result[] |
+      ((.metric.instance // "unknown") + ":" + (.metric.device // "unknown")) + " " + .value[1]
+    ' 2>/dev/null
+  else
+    python3 -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+for r in d.get('data', {}).get('result', []):
+  inst = r['metric'].get('instance', 'unknown')
+  dev  = r['metric'].get('device',   'unknown')
+  val  = r['value'][1]
+  print(inst + ':' + dev + ' ' + val)
+" <<< "$response" 2>/dev/null
+  fi
+}
+
+prom_targets_health() {
+  # Return "down" scrape targets as "INSTANCE LAST_SCRAPE ERROR" lines (space-separated).
+  # Silently returns nothing if Prometheus is unreachable or no targets are down.
+  # No test hook — fails silently if Prom is absent.
+  [[ -z "$PROM_URL" ]] && return 0
+  local response
+  response=$(curl -sf "${PROM_URL}/api/v1/targets" --max-time 5 2>/dev/null) || return 0
+  if command -v jq &>/dev/null; then
+    echo "$response" | jq -r '
+      .data.activeTargets[] |
+      select(.health == "down") |
+      [.labels.instance, .lastScrape, (.lastError // "unknown error")] | join("\t")
+    ' 2>/dev/null
+  else
+    python3 -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+for t in d.get('data', {}).get('activeTargets', []):
+  if t.get('health') == 'down':
+    inst   = t.get('labels', {}).get('instance', 'unknown')
+    scrape = t.get('lastScrape', '')
+    err    = t.get('lastError', 'unknown error')
+    print(inst + '\t' + scrape + '\t' + err)
+" <<< "$response" 2>/dev/null
+  fi
+}
+
+_fleet_print_targets() {
+  local data="$1"
+  [[ -z "$data" ]] && return
+  echo -e "${YELLOW}${BOLD}[UNREACHABLE TARGETS]${RESET}"
+  while IFS=$'\t' read -r inst scrape err; do
+    [[ -z "$inst" ]] && continue
+    local scrape_disp; [[ -z "$scrape" ]] && scrape_disp="never" || scrape_disp="$scrape"
+    echo -e "  ${CYAN}${inst}${RESET}  last scrape: ${scrape_disp}  —  ${err}"
+  done <<< "$data"
+  echo ""
+}
+
+fleet_scan_prometheus() {
+  local query="increase(node_network_carrier_changes_total[${WINDOW_MINUTES}m])"
+  local results
+  results=$(prom_query_all "$query") || true
+
+  local flapping_found=0
+
+  while IFS=' ' read -r inst_dev val; do
+    [[ -z "$inst_dev" || -z "$val" ]] && continue
+    # inst_dev format: "hostname:9100:eth0" — split on last colon to get device name
+    local iface="${inst_dev##*:}"
+    local inst="${inst_dev%:*}"   # strip last colon+iface → "hostname:9100"
+    # Filter virtual interfaces unless -i is set
+    if [[ -z "$IFACE_FILTER" ]]; then
+      [[ "$iface" =~ ^(lo|veth|virbr|docker|tun|tap|br-) ]] && continue
+    else
+      [[ "$iface" != "$IFACE_FILTER" ]] && continue
+    fi
+    # val is a float; compare to threshold
+    local above
+    above=$(awk -v v="$val" -v t="$FLAP_THRESHOLD" 'BEGIN { print (v+0 >= t+0) ? "yes" : "no" }')
+    [[ "$above" != "yes" ]] && continue
+
+    # Enrich: current state and error rates
+    local up_val rx_err tx_err
+    up_val=$(prom_query "node_network_up{instance=\"${inst}\",device=\"${iface}\"}")
+    rx_err=$(prom_query "rate(node_network_receive_errs_total{instance=\"${inst}\",device=\"${iface}\"}[5m])*60")
+    tx_err=$(prom_query "rate(node_network_transmit_errs_total{instance=\"${inst}\",device=\"${iface}\"}[5m])*60")
+
+    local state_str="${DIM}unknown${RESET}"
+    [[ "$up_val" == "1" ]] && state_str="${GREEN}UP${RESET}"
+    [[ "$up_val" == "0" ]] && state_str="${RED}DOWN${RESET}"
+
+    local trans_display
+    trans_display=$(printf "%.0f" "$val")
+
+    echo -e "${RED}${BOLD}[FLAPPING]${RESET}  ${BOLD}${inst}${RESET}:${BOLD}${iface}${RESET}"
+    echo -e "  Carrier changes : ${RED}${trans_display}${RESET} in last ${WINDOW_MINUTES}m"
+    echo -e "  Current state   : ${state_str}"
+    [[ -n "$rx_err" ]] && printf "  RX errors       : %.2f/min\n" "$rx_err"
+    [[ -n "$tx_err" ]] && printf "  TX errors       : %.2f/min\n" "$tx_err"
+    echo ""
+    flapping_found=1
+    FLAPPING_FOUND=1
+  done <<< "$results"
+
+  if [[ "$flapping_found" -eq 0 ]]; then
+    echo -e "${GREEN}No flapping detected across fleet in the last ${WINDOW_MINUTES}m.${RESET}"
+    echo ""
+  fi
+
+  local down_targets
+  down_targets=$(prom_targets_health) || true
+  _fleet_print_targets "$down_targets"
+}
+
 show_prometheus_context() {
   # Print a [Prometheus] enrichment block for the given interface.
   # Skips silently if no Prometheus source is configured, the interface is
@@ -576,6 +775,41 @@ show_prometheus_context() {
   [[ -n "$tx_err"  ]] && printf "    TX errors       : %.2f/min\n" "$tx_err"
   [[ -n "$rx_drop" ]] && printf "    RX drops        : %.2f/min\n" "$rx_drop"
   [[ -n "$tx_drop" ]] && printf "    TX drops        : %.2f/min\n" "$tx_drop"
+}
+
+show_system_load_at_flap() {
+  # Print a [system @ flap time] block showing CPU idle %, memory available %,
+  # and load average at the moment flapping began (first_epoch).
+  # Requires Prometheus with node_exporter data. Silently skips if unavailable.
+  local iface="$1" epoch="$2"
+  [[ -z "$PROM_URL" && -z "${_LINK_FLAP_TEST_PROM:-}" ]] && return
+  [[ "$iface" =~ ^(stp|lacp)- ]] && return
+
+  local cpu_idle mem_avail load1
+  cpu_idle=$(prom_query_at \
+    'avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))*100' "$epoch")
+  mem_avail=$(prom_query_at \
+    'node_memory_MemAvailable_bytes/node_memory_MemTotal_bytes*100' "$epoch")
+  load1=$(prom_query_at "node_load1" "$epoch")
+
+  [[ -z "$cpu_idle" && -z "$mem_avail" && -z "$load1" ]] && return
+
+  local flap_ts
+  flap_ts=$(date -d "@$epoch" "+%H:%M:%S" 2>/dev/null || echo "unknown")
+  echo -e "  ${CYAN}[system @ ${flap_ts}]${RESET}"
+
+  if [[ -n "$cpu_idle" ]]; then
+    local cpu_col="$GREEN"
+    awk -v v="$cpu_idle" 'BEGIN{exit !(v+0 < 15)}'  && cpu_col="$RED"    || true
+    awk -v v="$cpu_idle" 'BEGIN{exit !(v+0>=15 && v+0<30)}' && cpu_col="$YELLOW" || true
+    printf "    CPU idle        : ${cpu_col}%.1f%%${RESET}\n" "$cpu_idle"
+  fi
+  if [[ -n "$mem_avail" ]]; then
+    local mem_col="$GREEN"
+    awk -v v="$mem_avail" 'BEGIN{exit !(v+0 < 10)}' && mem_col="$YELLOW" || true
+    printf "    Memory available: ${mem_col}%.1f%%${RESET}\n" "$mem_avail"
+  fi
+  [[ -n "$load1" ]] && printf "    Load avg (1m)   : %.2f\n" "$load1"
 }
 
 # ── node_exporter ─────────────────────────────────────────────────────────────
@@ -821,32 +1055,34 @@ parse_events() {
 # ── Step 2: Populate TMPFILE ──────────────────────────────────────────────────
 LOG_SOURCE="journald"
 
-if [[ -n "${_LINK_FLAP_TEST_INPUT:-}" ]]; then
-  # Test hook: bypass journald/syslog and read from a supplied file.
-  # Set by the test suite only — not a documented end-user option.
-  LOG_SOURCE="test-input"
-  collect_from_syslog "$_LINK_FLAP_TEST_INPUT" | parse_events >> "$TMPFILE"
-elif [[ -n "${_LINK_FLAP_TEST_TSHARK:-}" ]]; then
-  LOG_SOURCE="test-tshark"
-  if [[ -n "$IFACE_FILTER" ]]; then
-    awk -v f="$IFACE_FILTER" '$2 == f' "$_LINK_FLAP_TEST_TSHARK" >> "$TMPFILE"
+if [[ "$FLEET_MODE" -eq 0 ]]; then
+  if [[ -n "${_LINK_FLAP_TEST_INPUT:-}" ]]; then
+    # Test hook: bypass journald/syslog and read from a supplied file.
+    # Set by the test suite only — not a documented end-user option.
+    LOG_SOURCE="test-input"
+    collect_from_syslog "$_LINK_FLAP_TEST_INPUT" | parse_events >> "$TMPFILE"
+  elif [[ -n "${_LINK_FLAP_TEST_TSHARK:-}" ]]; then
+    LOG_SOURCE="test-tshark"
+    if [[ -n "$IFACE_FILTER" ]]; then
+      awk -v f="$IFACE_FILTER" '$2 == f' "$_LINK_FLAP_TEST_TSHARK" >> "$TMPFILE"
+    else
+      cat "$_LINK_FLAP_TEST_TSHARK" >> "$TMPFILE"
+    fi
+  elif [[ -n "$PCAP_FILE" ]]; then
+    LOG_SOURCE="tshark ($PCAP_FILE)"
+    collect_from_tshark "$PCAP_FILE" >> "$TMPFILE"
+  elif command -v journalctl &>/dev/null; then
+    collect_from_journald | parse_events >> "$TMPFILE"
   else
-    cat "$_LINK_FLAP_TEST_TSHARK" >> "$TMPFILE"
+    LOG_SOURCE="syslog files"
+    for f in /var/log/syslog /var/log/kern.log; do
+      collect_from_syslog "$f" | parse_events >> "$TMPFILE"
+    done
   fi
-elif [[ -n "$PCAP_FILE" ]]; then
-  LOG_SOURCE="tshark ($PCAP_FILE)"
-  collect_from_tshark "$PCAP_FILE" >> "$TMPFILE"
-elif command -v journalctl &>/dev/null; then
-  collect_from_journald | parse_events >> "$TMPFILE"
-else
-  LOG_SOURCE="syslog files"
-  for f in /var/log/syslog /var/log/kern.log; do
-    collect_from_syslog "$f" | parse_events >> "$TMPFILE"
-  done
-fi
 
-# Remove duplicate lines (same epoch + iface + state from multiple sources)
-sort -u "$TMPFILE" -o "$TMPFILE"
+  # Remove duplicate lines (same epoch + iface + state from multiple sources)
+  sort -u "$TMPFILE" -o "$TMPFILE"
+fi
 
 # ── Step 3: Analyse for flapping ─────────────────────────────────────────────
 # For each interface: count state transitions, report if >= FLAP_THRESHOLD
@@ -874,6 +1110,7 @@ _TEST_ACTIVE=0
 [[ -n "${_LINK_FLAP_TEST_NODE_EXPORTER:-}" ]] && _TEST_ACTIVE=1
 [[ -n "${_LINK_FLAP_TEST_IPERF3:-}"        ]] && _TEST_ACTIVE=1
 [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}"    ]] && _TEST_ACTIVE=1
+[[ -n "${_LINK_FLAP_TEST_PROM_ALL:-}"      ]] && _TEST_ACTIVE=1
 
 if [[ $_TEST_ACTIVE -eq 1 ]]; then
   echo ""
@@ -886,10 +1123,15 @@ if [[ $_TEST_ACTIVE -eq 1 ]]; then
   [[ -n "${_LINK_FLAP_TEST_NODE_EXPORTER:-}" ]] && echo -e "${YELLOW}  NE      : canned metrics (not a real node_exporter)${RESET}"
   [[ -n "${_LINK_FLAP_TEST_IPERF3:-}"        ]] && echo -e "${YELLOW}  iperf3  : canned JSON (not a real iperf3 run)${RESET}"
   [[ -n "${_LINK_FLAP_TEST_WIZARD_DIR:-}"    ]] && echo -e "${YELLOW}  Wizard  : mocked sysfs/ethtool (not real hardware)${RESET}"
+  [[ -n "${_LINK_FLAP_TEST_PROM_ALL:-}"      ]] && echo -e "${YELLOW}  Fleet   : canned Prom multi-result (not a real Prometheus)${RESET}"
 fi
 
 echo ""
-echo -e "${BOLD}Link Flap Detector${RESET} — source: ${LOG_SOURCE}"
+if [[ "$FLEET_MODE" -eq 1 ]]; then
+  echo -e "${BOLD}Link Flap Detector${RESET} — ${BOLD}fleet mode${RESET}"
+else
+  echo -e "${BOLD}Link Flap Detector${RESET} — source: ${LOG_SOURCE}"
+fi
 echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} transitions"
 [[ -n "$IFACE_FILTER" ]] && echo -e "Interface filter: ${CYAN}${IFACE_FILTER}${RESET}"
 [[ -n "$PROM_URL" ]] && echo -e "Prometheus: ${CYAN}${PROM_URL}${RESET}"
@@ -897,6 +1139,12 @@ echo -e "Window: last ${WINDOW_MINUTES}m  |  Flap threshold: ${FLAP_THRESHOLD} t
 [[ -n "$_IPERF3_RESULT_CACHE" ]] && echo -e "iperf3: ${CYAN}${IPERF3_SERVER}${RESET}"
 [[ -n "$FOLLOW_SECONDS" ]] && echo -e "Follow: every ${CYAN}${FOLLOW_SECONDS}s${RESET}  (Ctrl-C to stop)"
 echo ""
+
+# Fleet mode: query Prometheus directly — bypass per-interface local-log analysis
+if [[ "$FLEET_MODE" -eq 1 ]]; then
+  fleet_scan_prometheus
+  exit $(( FLAPPING_FOUND ))
+fi
 
 if [[ ${#IFACES[@]} -eq 0 ]]; then
   echo -e "${GREEN}No link state events found in the log window.${RESET}"
@@ -955,6 +1203,7 @@ for iface in "${IFACES[@]}"; do
       done
     fi
     show_prometheus_context "$iface"
+    show_system_load_at_flap "$iface" "$first_epoch"
     show_node_exporter_context "$iface"
     show_iperf3_context "$iface"
     echo ""
@@ -965,6 +1214,7 @@ for iface in "${IFACES[@]}"; do
         echo -e "$el"
       done
       show_prometheus_context "$iface"
+      show_system_load_at_flap "$iface" "$first_epoch"
       show_node_exporter_context "$iface"
       show_iperf3_context "$iface"
       echo ""
