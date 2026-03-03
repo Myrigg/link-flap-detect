@@ -350,7 +350,6 @@ _interactive_menu() {
 # _flap_what_next — post-run menu offering re-run, new run, or quit.
 # No-op unless _FLAP_INTERACTIVE_MODE=1.
 _flap_what_next() {
-  local exit_code="${1:-0}"
   [[ "$_FLAP_INTERACTIVE_MODE" -eq 0 ]] && return 0
 
   local divider="╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
@@ -687,7 +686,7 @@ run_wizard() {
 
   # 3. Collect diagnostic data
   local operstate carrier_changes power_control
-  local ethtool_out ethtool_s_out ethtool_eee_out ip_link_out dmesg_raw dmesg_out
+  local ethtool_out ethtool_s_out ethtool_eee_out dmesg_raw dmesg_out
 
   operstate=$(_wiz_read "/sys/class/net/${iface}/operstate")
   carrier_changes=$(_wiz_read "/sys/class/net/${iface}/carrier_changes")
@@ -695,14 +694,12 @@ run_wizard() {
   ethtool_out=$(_wiz_cmd ethtool ethtool "$iface")
   ethtool_s_out=$(_wiz_cmd ethtool_s ethtool -S "$iface")
   ethtool_eee_out=$(_wiz_cmd ethtool_eee ethtool --show-eee "$iface")
-  ip_link_out=$(_wiz_cmd ip_link ip link show "$iface")
   dmesg_raw=$(_wiz_cmd dmesg dmesg)
   dmesg_out=$(echo "$dmesg_raw" | grep -i "$iface" | tail -30 2>/dev/null || true)
 
   # Fault localization data
-  local ethtool_i_out ip_addr_out ip_route_out all_links_out resolv_conf_out
+  local ethtool_i_out ip_route_out all_links_out resolv_conf_out
   ethtool_i_out=$(_wiz_cmd ethtool_i ethtool -i "$iface")
-  ip_addr_out=$(_wiz_cmd ip_addr ip addr show "$iface")
   ip_route_out=$(_wiz_cmd ip_route ip route show)
   all_links_out=$(_wiz_cmd all_links ip link show)
   resolv_conf_out=$(_wiz_cmd resolv_conf cat /etc/resolv.conf)

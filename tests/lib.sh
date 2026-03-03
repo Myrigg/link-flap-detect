@@ -42,7 +42,9 @@ if [[ -t 1 ]]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
   BOLD='\033[1m'; RESET='\033[0m'
 else
-  RED=''; GREEN=''; YELLOW=''; BOLD=''; RESET=''
+  RED=''; GREEN=''; YELLOW=''; RESET=''
+  # shellcheck disable=SC2034 # BOLD used by sourcing test files
+  BOLD=''
 fi
 
 # ── Result reporters ──────────────────────────────────────────────────────────
@@ -198,6 +200,7 @@ run_fault_loc_test() {
   [[ -n "$dut_dir" ]] && _extra_env+=("_LINK_FLAP_TEST_DUT_DIR=$dut_dir")
   local _extra_args=()
   [[ -n "$dut_iface" ]] && _extra_args+=(--dut "$dut_iface")
+  # shellcheck disable=SC2034 # OUT and EXITCODE read by callers
   OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
         _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
         env "${_extra_env[@]+"${_extra_env[@]}"}" \
