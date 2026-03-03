@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–95, 96–99
+# Tests covered: 83–95, 96–99, 210–217
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -539,4 +539,198 @@ if [[ $ok -eq 1 ]]; then
   pass "99: non-USB NIC Unknown speed still triggers Layer 1 SUSPECT (exit=$EXITCODE)"
 else
   fail "99: non-USB NIC Unknown speed still triggers Layer 1 SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 210: Switch Port SUSPECT when half-duplex ──────────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Half
+    Auto-negotiation: on
+    Link detected: yes
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "Switch Port"              || ok=0
+echo "$OUT" | grep -q "SUSPECT"                   || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "210: fault localization Switch Port SUSPECT for half-duplex (exit=$EXITCODE)"
+else
+  fail "210: fault localization Switch Port SUSPECT for half-duplex" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 211: NIC Driver SUSPECT when dmesg reset ───────────────────────────────
+wiz_dir=$(_fl_base)
+printf '%s\n' "[12345.678] eth0: Reset adapter" > "$wiz_dir/dmesg"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "NIC Driver\|Driver"       || ok=0
+echo "$OUT" | grep -q "SUSPECT"                   || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "211: fault localization NIC Driver SUSPECT for dmesg reset (exit=$EXITCODE)"
+else
+  fail "211: fault localization NIC Driver SUSPECT for dmesg reset" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 212: Internet UNREACHABLE (gateway OK) ─────────────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ping_gw" <<'EOF'
+PING 192.168.1.1 (192.168.1.1) 56(84) bytes of data.
+64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=1.82 ms
+
+--- 192.168.1.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data.
+
+--- 8.8.8.8 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 2000ms
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "Internet"                  || ok=0
+echo "$OUT" | grep -qi "UNREACHABLE"               || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "212: fault localization Internet UNREACHABLE (gateway OK) (exit=$EXITCODE)"
+else
+  fail "212: fault localization Internet UNREACHABLE (gateway OK)" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 213: No default route → gateway UNKNOWN ────────────────────────────────
+wiz_dir=$(_fl_base)
+echo "10.0.0.0/24 dev eth0 scope link" > "$wiz_dir/ip_route"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "not configured"            || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "213: fault localization no default route → 'not configured' (exit=$EXITCODE)"
+else
+  fail "213: fault localization no default route → 'not configured'" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 214: DNS SUSPECT (nameserver present, dig empty) ───────────────────────
+wiz_dir=$(_fl_base)
+echo "nameserver 8.8.8.8" > "$wiz_dir/resolv_conf"
+echo "" > "$wiz_dir/dig_dns"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "DNS"                       || ok=0
+echo "$OUT" | grep -q "SUSPECT"                    || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "214: fault localization DNS SUSPECT (nameserver present, dig empty) (exit=$EXITCODE)"
+else
+  fail "214: fault localization DNS SUSPECT (nameserver present, dig empty)" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 215: Verdict — "No fault detected" ─────────────────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: e1000e
+version: 3.8.7-NAPI
+firmware-version: 3.25.0
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "No fault detected"         || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "215: fault localization verdict 'No fault detected' (exit=$EXITCODE)"
+else
+  fail "215: fault localization verdict 'No fault detected'" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 216: Verdict — "NIC DRIVER or firmware" ────────────────────────────────
+wiz_dir=$(_fl_base)
+printf '%s\n' "[12345.678] eth0: Reset adapter" > "$wiz_dir/dmesg"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "NIC DRIVER"                || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "216: fault localization verdict 'NIC DRIVER or firmware' (exit=$EXITCODE)"
+else
+  fail "216: fault localization verdict 'NIC DRIVER or firmware'" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 217: Verdict — "Physical and driver both" ──────────────────────────────
+wiz_dir=$(_fl_base)
+echo "1000" > "$wiz_dir/carrier_changes"
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: no
+EOF
+printf '%s\n' "[12345.678] eth0: Reset adapter" > "$wiz_dir/dmesg"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "Physical.*driver\|physical layer and driver" || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "217: fault localization verdict 'Physical and driver both' (exit=$EXITCODE)"
+else
+  fail "217: fault localization verdict 'Physical and driver both'" "exit=$EXITCODE\n$OUT"
 fi

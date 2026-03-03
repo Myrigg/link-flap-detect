@@ -191,6 +191,50 @@ run_with_config() {
         bash "$SCRIPT" "$@" 2>&1) || EXITCODE=$?
 }
 
+# make_wizard_fixture DIR
+# Creates a minimal valid wizard fixture directory with empty/default files for
+# every slot the wizard reads.  Tests override only the files they care about.
+make_wizard_fixture() {
+  local d="$1"
+  mkdir -p "$d"
+  echo "up"                                > "$d/operstate"
+  echo "3"                                 > "$d/carrier_changes"
+  echo "on"                                > "$d/power_control"
+  cat > "$d/ethtool" <<'FIXTURE'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Full
+    Auto-negotiation: on
+    Link detected: yes
+FIXTURE
+  echo ""                                  > "$d/ethtool_s"
+  echo "EEE status: disabled"             > "$d/ethtool_eee"
+  echo ""                                  > "$d/ethtool_i"
+  echo ""                                  > "$d/ip_link"
+  echo ""                                  > "$d/dmesg"
+  echo ""                                  > "$d/ip_addr"
+  echo "default via 192.168.1.1 dev eth0" > "$d/ip_route"
+  cat > "$d/all_links" <<'FIXTURE'
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+FIXTURE
+  echo "nameserver 8.8.8.8"              > "$d/resolv_conf"
+  echo ""                                  > "$d/ethtool_m"
+  echo ""                                  > "$d/lldpctl"
+}
+
+# section_grep SECTION_LABEL PATTERN
+# Extracts the block between a heading matching SECTION_LABEL and the next blank
+# line (or EOF), then greps for PATTERN inside that block.  Returns 0/1 like grep.
+section_grep() {
+  local label="$1" pattern="$2"
+  awk -v lbl="$label" '
+    $0 ~ lbl       { capture=1; next }
+    capture && /^$/ { capture=0 }
+    capture         { print }
+  ' <<< "$OUT" | grep -qi "$pattern"
+}
+
 # run_fault_loc_test WIZARD_DIR DUT_DIR DUT_IFACE [SCRIPT_ARGS...]
 # Runs the wizard with fault localization; pass "" for unused DUT args.
 run_fault_loc_test() {

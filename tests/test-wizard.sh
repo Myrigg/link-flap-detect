@@ -5,7 +5,7 @@
 # correct findings (CAUSE/WARN) for known hardware conditions, and that rollback
 # handles list, restore, and partial-restore (non-root) scenarios correctly.
 #
-# Tests covered: 32–37, 57–58, 61
+# Tests covered: 32–37, 57–58, 61, 200–206
 #
 # Sysfs/command output is mocked via _LINK_FLAP_TEST_WIZARD_DIR.
 # Safe to run without root — test 61 skips automatically when running as root.
@@ -138,4 +138,119 @@ if [[ $EXITCODE -eq 1 ]] \
   pass "58: auto-wizard fires on flapping detection (no -d flag needed)"
 else
   fail "58: auto-wizard fires on flapping detection (no -d flag needed)" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── Additional wizard findings ─────────────────────────────────────────────
+
+# 200. Half-duplex → [WARN]
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Half
+    Auto-negotiation: on
+    Link detected: yes
+EOF
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[WARN\]" \
+   && echo "$OUT" | grep -qi "Half-duplex"; then
+  pass "200: wizard: Half-duplex → [WARN]"
+else
+  fail "200: wizard: Half-duplex → [WARN]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 201. No physical link → [CAUSE]
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: on
+    Link detected: no
+EOF
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[CAUSE\]" \
+   && echo "$OUT" | grep -qi "No physical link"; then
+  pass "201: wizard: No physical link → [CAUSE]"
+else
+  fail "201: wizard: No physical link → [CAUSE]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 202. RX CRC errors → [CAUSE]
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+cat > "$wiz_dir/ethtool_s" <<'EOF'
+NIC statistics:
+     rx_crc_errors: 42
+     tx_packets: 100000
+EOF
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[CAUSE\]" \
+   && echo "$OUT" | grep -qi "CRC"; then
+  pass "202: wizard: RX CRC errors → [CAUSE]"
+else
+  fail "202: wizard: RX CRC errors → [CAUSE]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 203. dmesg hardware error → [CAUSE]
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+printf '%s\n' "[12345.678] eth0: hardware error detected" > "$wiz_dir/dmesg"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[CAUSE\]" \
+   && echo "$OUT" | grep -qi "Hardware error"; then
+  pass "203: wizard: dmesg hardware error → [CAUSE]"
+else
+  fail "203: wizard: dmesg hardware error → [CAUSE]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 204. dmesg NIC reset → [WARN]
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+printf '%s\n' "[12345.678] eth0: Reset adapter" > "$wiz_dir/dmesg"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "\[WARN\]" \
+   && echo "$OUT" | grep -qi "reset"; then
+  pass "204: wizard: dmesg NIC reset → [WARN]"
+else
+  fail "204: wizard: dmesg NIC reset → [WARN]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 205. Regular flap interval (evenly-spaced events) → [WARN]
+_reg_input=$(mktemp "$TESTDIR/XXXXXX.log")
+_now=$(date +%s)
+# 5 alternating Down/Up events at exact 10 s intervals → spread = 0 < 30
+{
+  echo "$(date -d "@$(( _now - 50 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down"
+  echo "$(date -d "@$(( _now - 40 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex"
+  echo "$(date -d "@$(( _now - 30 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down"
+  echo "$(date -d "@$(( _now - 20 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex"
+  echo "$(date -d "@$(( _now - 10 ))" "+%Y-%m-%dT%H:%M:%S+0000") host kernel: eth0: NIC Link is Down"
+} > "$_reg_input"
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+OUT=''; EXITCODE=0
+OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+      _LINK_FLAP_TEST_INPUT="$_reg_input" \
+      _LINK_FLAP_TEST_WIZARD_DIR="$wiz_dir" \
+      bash "$SCRIPT" -w 60 -t 3 2>&1) || EXITCODE=$?
+if echo "$OUT" | grep -qi "Regular flap interval"; then
+  pass "205: wizard: regular flap interval → [WARN]"
+else
+  fail "205: wizard: regular flap interval → [WARN]" "exit=$EXITCODE\n$OUT"
+fi
+
+# 206. carrier_changes below threshold → no carrier finding
+wiz_dir=$(mktemp -d "$TESTDIR/wiz-XXXXXX")
+make_wizard_fixture "$wiz_dir"
+echo "3" > "$wiz_dir/carrier_changes"
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+if [[ $EXITCODE -eq 0 ]] \
+   && ! echo "$OUT" | grep -qi "carrier.*\[WARN\]\|\[WARN\].*carrier" \
+   && ! echo "$OUT" | grep -qi "carrier.*\[CAUSE\]\|\[CAUSE\].*carrier"; then
+  pass "206: wizard: carrier_changes=3 → no carrier finding"
+else
+  fail "206: wizard: carrier_changes=3 → no carrier finding" "exit=$EXITCODE\n$OUT"
 fi
