@@ -1014,7 +1014,11 @@ run_wizard() {
       mbps_str=$(python3 -c "import sys; print(f'{float(sys.argv[1])/1e6:.1f}')" "$iperf3_bps" 2>/dev/null || echo "?")
     fi
     _rpt ""
-    _rpt "${BOLD}iperf3 Results${RESET}  (→ ${IPERF3_SERVER})"
+    if [[ -n "$_IPERF3_BIND_IP" ]]; then
+      _rpt "${BOLD}iperf3 Results${RESET}  (→ ${IPERF3_SERVER} via ${_IPERF3_BIND_IP})"
+    else
+      _rpt "${BOLD}iperf3 Results${RESET}  (→ ${IPERF3_SERVER}, unbound)"
+    fi
     _rpt "  bandwidth      : ${mbps_str} Mbps"
     if [[ -n "$iperf3_retransmits" ]]; then _rpt "  retransmits    : ${iperf3_retransmits}"; fi
   fi
@@ -1757,14 +1761,21 @@ show_node_exporter_context() {
 
 # ── iperf3 ────────────────────────────────────────────────────────────────────
 _IPERF3_RESULT_CACHE=""
+_IPERF3_BIND_IP=""     # IP used for -B binding (empty = unbound)
 
 run_iperf3() {
+  local iface="${1:-}"    # interface being diagnosed (empty in non-wizard mode)
+  local local_ip="${2:-}" # IP to bind to (IPv4 or global IPv6; empty = unbound)
   [[ -z "$IPERF3_SERVER" ]] && return 1
   if [[ -n "${_LINK_FLAP_TEST_IPERF3:-}" ]]; then
     _IPERF3_RESULT_CACHE=$(cat "$_LINK_FLAP_TEST_IPERF3" 2>/dev/null || true)
   else
-    _IPERF3_RESULT_CACHE=$(iperf3 -c "$IPERF3_SERVER" -t 5 --json 2>/dev/null || true)
+    local bind_args=()
+    [[ -n "$local_ip" ]] && bind_args=(-B "$local_ip")
+    _IPERF3_RESULT_CACHE=$(iperf3 -c "$IPERF3_SERVER" "${bind_args[@]}" -t 5 --json \
+                           2>/dev/null || true)
   fi
+  _IPERF3_BIND_IP="$local_ip"
   [[ -n "$_IPERF3_RESULT_CACHE" ]]
 }
 
@@ -1795,7 +1806,11 @@ show_iperf3_context() {
 
   [[ -z "$bps" && -z "$retransmits" ]] && return
 
-  echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}"
+  if [[ -n "$_IPERF3_BIND_IP" ]]; then
+    echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}  (via ${iface} ${_IPERF3_BIND_IP})"
+  else
+    echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}"
+  fi
   if [[ -n "$bps" ]]; then
     local mbps
     mbps=$(python3 -c "import sys; print(f'{float(sys.argv[1])/1e6:.1f}')" "$bps" 2>/dev/null || echo "?")
@@ -1986,7 +2001,22 @@ fi
 # Probe node_exporter once; result cached for wizard and per-interface blocks below
 fetch_node_exporter || true
 _prompt_iperf3_run
-run_iperf3 || true
+# In wizard mode, bind iperf3 to the interface being diagnosed so traffic
+# cannot silently route via a different NIC on multi-homed hosts.
+# Prefer IPv4; fall back to global/ULA IPv6; skip link-local (fe80:: unreachable).
+if [[ -n "$DIAG_IFACE" ]]; then
+  _iface_addr_raw=$(ip addr show "$DIAG_IFACE" 2>/dev/null || true)
+  _iperf3_local_ip=$(echo "$_iface_addr_raw" \
+    | grep -oP 'inet \K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+  if [[ -z "$_iperf3_local_ip" ]]; then
+    _iperf3_local_ip=$(echo "$_iface_addr_raw" \
+      | grep 'inet6' | grep -v 'scope link' \
+      | grep -oP 'inet6 \K[0-9a-f:]+' | head -1 || true)
+  fi
+  run_iperf3 "$DIAG_IFACE" "$_iperf3_local_ip" || true
+else
+  run_iperf3 || true
+fi
 
 if [[ -n "$DIAG_IFACE" ]]; then
   run_wizard "$DIAG_IFACE"
