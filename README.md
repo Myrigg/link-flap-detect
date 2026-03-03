@@ -72,6 +72,8 @@ Updates via `git pull` if installed as a clone, or re-downloads the script in-pl
 | `--fleet` | Fleet mode: query Prometheus for flapping across all monitored hosts (requires `-m`) | off |
 | `--dut IFACE` | Compare a device-under-test interface against the primary — the wizard identifies whether the fault is in the DUT or the host | (none) |
 | `--update` | Update flap to the latest version from GitHub and exit | |
+| `--since DATE` | Scan from DATE instead of using `-w`. Accepts `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS`. Date-only defaults to `00:00:00`. | (none) |
+| `--until DATE` | Scan up to DATE (default: now). Same format as `--since`. Date-only defaults to `23:59:59`. | now |
 
 Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRESHOLD`, `IFACE_FILTER`.
 Command-line flags take precedence over environment variables when both are set.
@@ -133,6 +135,18 @@ tshark -w /tmp/capture.pcap -a duration:60 -i eth0
 **Update to the latest version:**
 ```bash
 ./flap --update
+```
+
+**Analyse a specific historical time window:**
+```bash
+# Exact datetime range:
+./flap -i eno6 --since "2026-02-27 13:21:28" --until "2026-02-28 21:16:03"
+
+# Full days (date-only; --since defaults to 00:00:00, --until to 23:59:59):
+./flap -i eno6 --since "2026-02-27" --until "2026-02-28"
+
+# From a date until now (no --until):
+./flap -i eno6 --since "2026-02-27"
 ```
 
 **Run the diagnostic wizard on eth0:**
@@ -448,7 +462,7 @@ After collecting interface state and raising findings, the wizard checks six lay
 | NIC Driver | ethtool driver version, firmware, dmesg NIC resets |
 | Switch Port | LLDP availability, STP topology changes, duplex mismatch |
 | Gateway / Router | Live ping to default gateway and 8.8.8.8 |
-| VPN | Presence of tun/tap/wg interfaces |
+| VPN | Presence of tun/tap/wg/tailscale interfaces |
 | DNS | resolv.conf resolver + live DNS query |
 
 Each layer reports **OK** / **SUSPECT** / **UNKNOWN**. A **VERDICT** sentence names the

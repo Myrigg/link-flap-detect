@@ -23,6 +23,14 @@ compares DUT carrier_changes, speed, and link state against the host interface. 
 is unstable while the host is stable, VERDICT names the DUT or DUT-host cable as the fault.
 Intended for developers building or testing network hardware.
 
+### ~~Historical date range (`--since` / `--until`)~~ ✓ Done
+`--since DATE` and `--until DATE` allow scanning a specific historical window instead of
+`-w` (last N minutes from now). Accepts `YYYY-MM-DD HH:MM:SS` or bare `YYYY-MM-DD`; date-only
+`--since` defaults to `00:00:00` and `--until` to `23:59:59`. journalctl is passed matching
+`--since`/`--until` args for efficiency. A post-parse epoch filter applied to the event
+buffer handles all log sources (journald, syslog, tshark) uniformly. Not supported with
+`--fleet`.
+
 ### ~~Self-update (`--update`) and startup version check~~ ✓ Done
 `./flap --update` updates the script in-place: `git pull` for clone installs, `curl`
 re-download for standalone installs. On each interactive startup, flap silently checks the
