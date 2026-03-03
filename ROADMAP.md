@@ -110,8 +110,10 @@ finding with bond mode and carrier changes, or escalates to `[WARN]` when the
 member's carrier changes vastly exceed the bond's — indicating the member link is
 the fault, not the overall bond. Test hook: `_LINK_FLAP_TEST_BOND_MASTERS`.
 
-### Scheduled / cron mode
-Add `--log-file FILE` to append timestamped output to a file instead of printing to stdout, and `--quiet` to suppress all output except errors. Makes `flap` cron-safe for periodic checks: `*/15 * * * * ./flap --log-file /var/log/link-flap.log --quiet`.
+### ~~Scheduled / cron mode~~ ✓ Done
+`--log-file FILE` appends output to a file (ANSI auto-disabled since stdout is not
+a terminal). `--quiet` suppresses all stdout (exit code still reflects flapping).
+Combined: `*/15 * * * * ./flap --log-file /var/log/link-flap.log --quiet`.
 
 ---
 

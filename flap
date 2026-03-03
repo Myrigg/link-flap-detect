@@ -25,6 +25,8 @@
 #   -j            JSON output — emit a single JSON object instead of human-readable text
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
+#   --log-file F  Append output to FILE instead of stdout (ANSI auto-disabled)
+#   --quiet       Suppress all stdout output; exit code still reflects flapping
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
 #   --dut IFACE   Device-under-test interface; wizard compares it against the primary interface
 #                 to determine whether the fault is in the DUT or in this computer's network
@@ -64,6 +66,8 @@ _WEBHOOK_URL_FROM_FLAG=0     # set to 1 when -W is explicitly passed
 _FLAP_INTERACTIVE_MODE=0     # set to 1 when no-arg interactive menu ran
 _INTERACTIVE_ARGS=()         # args to reconstruct for "re-run same test"
 JSON_MODE=0                  # set to 1 when -j is passed
+LOG_FILE=""                  # --log-file: append output to file
+QUIET_MODE=0                 # --quiet: suppress all stdout
 
 # ── JSON output accumulators ─────────────────────────────────────────────────
 # Populated throughout the script when JSON_MODE=1; serialised at exit.
@@ -409,8 +413,10 @@ while [[ $# -gt 0 ]]; do
     --update) _do_update ;;
     --since)  SINCE_INPUT="${2:-}"; shift ;;
     --until)  UNTIL_INPUT="${2:-}"; shift ;;
-    --events) _EVENTS_QUERY="${2:-20}"; shift ;;
-    *)        _REBUILT_ARGS+=("$1") ;;
+    --events)   _EVENTS_QUERY="${2:-20}"; shift ;;
+    --log-file) LOG_FILE="${2:-}"; shift ;;
+    --quiet)    QUIET_MODE=1 ;;
+    *)          _REBUILT_ARGS+=("$1") ;;
   esac
   shift
 done
@@ -498,6 +504,15 @@ if [[ -n "$SINCE_EPOCH" && -n "$UNTIL_EPOCH" ]] && [[ "$UNTIL_EPOCH" -le "$SINCE
 fi
 if [[ "$FLEET_MODE" -eq 1 && -n "$SINCE_EPOCH" ]]; then
   echo "Error: --since/--until are not supported with --fleet." >&2; exit 1
+fi
+
+# ── Output redirection (--log-file, --quiet) ─────────────────────────────────
+if [[ -n "$LOG_FILE" ]]; then
+  exec >> "$LOG_FILE"
+  # ANSI is already disabled when stdout is not a terminal ([[ -t 1 ]] failed)
+fi
+if [[ "$QUIET_MODE" -eq 1 && -z "$LOG_FILE" ]]; then
+  exec 1>/dev/null
 fi
 
 # ── Update check (skipped in non-interactive, follow children, rollback) ──────
