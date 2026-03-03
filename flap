@@ -25,6 +25,7 @@
 #   -j            JSON output — emit a single JSON object instead of human-readable text
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
+#   --fix         Auto-apply safe single-command fixes from wizard findings (prompts in TTY)
 #   --log-file F  Append output to FILE instead of stdout (ANSI auto-disabled)
 #   --quiet       Suppress all stdout output; exit code still reflects flapping
 #   --fleet       Fleet mode: query Prometheus for flapping across all monitored hosts (requires -m)
@@ -68,6 +69,7 @@ _INTERACTIVE_ARGS=()         # args to reconstruct for "re-run same test"
 JSON_MODE=0                  # set to 1 when -j is passed
 LOG_FILE=""                  # --log-file: append output to file
 QUIET_MODE=0                 # --quiet: suppress all stdout
+FIX_MODE=0                   # --fix: auto-apply wizard fixes
 
 # ── JSON output accumulators ─────────────────────────────────────────────────
 # Populated throughout the script when JSON_MODE=1; serialised at exit.
@@ -414,6 +416,7 @@ while [[ $# -gt 0 ]]; do
     --since)  SINCE_INPUT="${2:-}"; shift ;;
     --until)  UNTIL_INPUT="${2:-}"; shift ;;
     --events)   _EVENTS_QUERY="${2:-20}"; shift ;;
+    --fix)      FIX_MODE=1 ;;
     --log-file) LOG_FILE="${2:-}"; shift ;;
     --quiet)    QUIET_MODE=1 ;;
     *)          _REBUILT_ARGS+=("$1") ;;
@@ -1219,6 +1222,57 @@ run_wizard() {
         ;;
     esac
   done
+
+  # ── Auto-apply fixes (--fix) ───────────────────────────────────────────────
+  # A fix is "auto-applicable" if it is a single shell command (no numbered steps,
+  # no pipes, no semicolons). Only CAUSE and WARN findings are considered.
+  if [[ "$FIX_MODE" -eq 1 ]]; then
+    local _fix_applied=0 _fix_failed=0 _fix_skipped=0
+    idx=0
+    for finding in "${findings[@]}"; do
+      local f_level f_title f_desc f_fix
+      IFS=$'\t' read -r f_level f_title f_desc f_fix <<< "$finding"
+      (( idx++ )) || true
+      [[ "$f_level" == "INFO" ]] && continue
+      [[ -z "$f_fix" ]] && continue
+      # Skip multi-step instructions (numbered lists, pipes, semicolons)
+      [[ "$f_fix" =~ ^[0-9]+\. ]] && continue
+      [[ "$f_fix" == *"|"* ]] && continue
+      [[ "$f_fix" == *";"* ]] && continue
+      # Skip non-actionable advice (starts with "Check:", "Review ", etc.)
+      [[ "$f_fix" =~ ^(Check|Review|Investigate|See|Replace|Try) ]] && continue
+
+      _rpt ""
+      if [[ -t 0 ]] && [[ -z "${_LINK_FLAP_TEST_FIX_LOG:-}" ]]; then
+        # Interactive: prompt
+        _rpt "  ${GREEN}[FIX ${idx}]${RESET} ${f_fix}"
+        read -rp "  Apply this fix now? [y/N] " _fix_answer < /dev/tty
+        if [[ "$_fix_answer" =~ ^[Yy] ]]; then
+          if eval "$f_fix" 2>/dev/null; then
+            _rpt "  ${GREEN}[APPLIED]${RESET} ${f_title}"
+            (( _fix_applied++ )) || true
+          else
+            _rpt "  ${RED}[FAILED]${RESET}  ${f_title} — try with sudo: sudo $f_fix"
+            (( _fix_failed++ )) || true
+          fi
+        else
+          (( _fix_skipped++ )) || true
+        fi
+      elif [[ -n "${_LINK_FLAP_TEST_FIX_LOG:-}" ]]; then
+        # Test mode: log commands to file
+        echo "$f_fix" >> "$_LINK_FLAP_TEST_FIX_LOG"
+        _rpt "  ${GREEN}[APPLIED]${RESET} ${f_title}"
+        (( _fix_applied++ )) || true
+      else
+        # Non-interactive: print command only
+        _rpt "  ${DIM}[--fix]${RESET} To apply: ${f_fix}"
+      fi
+    done
+    if [[ $(( _fix_applied + _fix_failed + _fix_skipped )) -gt 0 ]]; then
+      _rpt ""
+      _rpt "  Fixes: ${_fix_applied} applied, ${_fix_failed} failed, ${_fix_skipped} skipped"
+    fi
+  fi
 
   _rpt ""
   _rpt "${BOLD}Summary${RESET}"

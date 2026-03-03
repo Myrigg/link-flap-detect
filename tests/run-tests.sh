@@ -74,6 +74,8 @@ source "$TESTS_DIR/test-event-log.sh"
 source "$TESTS_DIR/test-bond.sh"
 # shellcheck source=tests/test-cron.sh
 source "$TESTS_DIR/test-cron.sh"
+# shellcheck source=tests/test-fix.sh
+source "$TESTS_DIR/test-fix.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))

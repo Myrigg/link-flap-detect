@@ -100,8 +100,11 @@ remote peer: LLDP management IP (`lldpctl $IFACE`) first, then the default gatew
 skipped if neither source yields an address. Explicit `-b SERVER` and saved config values
 continue to work as before and take precedence over auto-discovery.
 
-### Auto-apply fixes
-Add `--fix` flag to the wizard. When a `[CAUSE]` finding has a known, safe, single-command fix (EEE off, power control, autoneg), prompt for confirmation and apply it immediately rather than printing a command for the user to copy. Requires root for some fixes; print a clear `sudo` escalation if not already running as root.
+### ~~Auto-apply fixes~~ ✓ Done
+`--fix` auto-applies safe single-command wizard fixes (EEE off, power control,
+autoneg). Interactive TTY: prompts per fix with `[y/N]`. Non-interactive: prints
+the command only. Multi-step instructions (numbered lists) are skipped. Failed
+commands suggest `sudo`. Test hook: `_LINK_FLAP_TEST_FIX_LOG`.
 
 ### ~~Bond / LAG member awareness~~ ✓ Done
 When a flapping interface is a bond member (`/sys/class/net/<iface>/master`),
