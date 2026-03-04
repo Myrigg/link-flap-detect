@@ -80,3 +80,22 @@ if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -q "Error: -W must be"; then
 else
   fail "103: -W ftp://bad-url → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
+
+# ── 104: Webhook message with newline/tab/CR produces valid JSON ──────────────
+# Source utils.sh to test _json_escape directly (used by _send_webhook for JSON payloads)
+_utils_path="$(dirname "${BASH_SOURCE[0]}")/../lib/utils.sh"
+if [[ -f "$_utils_path" ]]; then
+  source "$_utils_path"
+  _test_msg=$'line1\nline2\ttab\rCR "quoted"'
+  _escaped=$(_json_escape "$_test_msg")
+  # Validate: no raw newlines/tabs/CRs, quotes escaped, result is valid in a JSON string
+  if [[ "$_escaped" == 'line1\nline2\ttab\rCR \"quoted\"' ]]; then
+    pass "104: _json_escape handles newline, tab, CR, and quotes in webhook messages"
+  else
+    fail "104: _json_escape handles newline, tab, CR, and quotes in webhook messages" \
+         "escaped=$_escaped"
+  fi
+else
+  fail "104: _json_escape handles newline, tab, CR, and quotes in webhook messages" \
+       "utils.sh not found at $_utils_path"
+fi

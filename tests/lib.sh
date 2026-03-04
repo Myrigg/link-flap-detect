@@ -226,17 +226,6 @@ FIXTURE
   echo "1500"                              > "$d/mtu"
 }
 
-# section_grep SECTION_LABEL PATTERN
-# Extracts the block between a heading matching SECTION_LABEL and the next blank
-# line (or EOF), then greps for PATTERN inside that block.  Returns 0/1 like grep.
-section_grep() {
-  local label="$1" pattern="$2"
-  awk -v lbl="$label" '
-    $0 ~ lbl       { capture=1; next }
-    capture && /^$/ { capture=0 }
-    capture         { print }
-  ' <<< "$OUT" | grep -qi "$pattern"
-}
 
 # run_fault_loc_test WIZARD_DIR DUT_DIR DUT_IFACE [SCRIPT_ARGS...]
 # Runs the wizard with fault localization; pass "" for unused DUT args.

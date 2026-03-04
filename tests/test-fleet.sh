@@ -165,7 +165,7 @@ OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-fleet" \
 ok=1
 [[ $EXITCODE -eq 0 ]]                                               || ok=0
 echo "$OUT" | grep -q "No flapping detected across fleet"           || ok=0
-echo "$OUT" | grep -qv "\[FLAPPING\]"                               || ok=0
+! echo "$OUT" | grep -q "\[FLAPPING\]"                               || ok=0
 
 if [[ $ok -eq 1 ]]; then
   pass "71: fleet scan — no flapping (exit=$EXITCODE)"
@@ -182,7 +182,7 @@ OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-fleet" \
 
 ok=1
 echo "$OUT" | grep -q "eth0"                      || ok=0
-echo "$OUT" | grep -qv "ens3"                     || ok=0
+! echo "$OUT" | grep -q "ens3"                     || ok=0
 [[ $EXITCODE -eq 1 ]]                             || ok=0
 
 if [[ $ok -eq 1 ]]; then

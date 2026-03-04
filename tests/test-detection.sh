@@ -477,7 +477,7 @@ ok=1
 [[ $EXITCODE -eq 1 ]] || ok=0   # flapping found → exit 1
 echo "$OUT" | grep -q "FLAPPING"          || ok=0
 echo "$OUT" | grep -q "2026-02-27"        || ok=0   # date range shown in header
-echo "$OUT" | grep -qv "12:00"            || ok=0   # 12:00 event filtered out
+! echo "$OUT" | grep -q "12:00"            || ok=0   # 12:00 event filtered out
 if [[ $ok -eq 1 ]]; then
   pass "66: --since datetime + --until datetime filters events to range (exit=$EXITCODE)"
 else
