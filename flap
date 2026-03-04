@@ -211,8 +211,10 @@ if [[ -n "$REMOTE_HOST" ]]; then
     echo "Error: -H: failed to copy script to ${REMOTE_HOST}." >&2; exit 2
   }
   # shellcheck disable=SC2029
+  _remote_args_escaped=""
+  [[ ${#_remote_args[@]} -gt 0 ]] && _remote_args_escaped=$(printf '%q ' "${_remote_args[@]}")
   timeout 300 ssh -o ConnectTimeout=10 -o BatchMode=yes "$REMOTE_HOST" \
-    "bash '${_remote_tmp}' ${_remote_args[*]+"${_remote_args[*]}"}; _rc=\$?; rm -f '${_remote_tmp}'; exit \$_rc"
+    "bash '${_remote_tmp}' ${_remote_args_escaped}; _rc=\$?; rm -f '${_remote_tmp}'; exit \$_rc"
   exit $?
 fi
 
@@ -343,7 +345,7 @@ if [[ -n "$_EVENTS_QUERY" ]]; then
     tail -n "$_EVENTS_QUERY" "$EVENT_LOG"
   else
     # Treat as a date prefix filter (e.g. "2026-03-01")
-    grep "^${_EVENTS_QUERY}" "$EVENT_LOG" || echo "No events matching '${_EVENTS_QUERY}'."
+    awk -F'\t' -v q="$_EVENTS_QUERY" 'substr($0,1,length(q))==q' "$EVENT_LOG" || echo "No events matching '${_EVENTS_QUERY}'."
   fi
   exit 0
 fi

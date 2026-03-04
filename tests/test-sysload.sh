@@ -78,7 +78,7 @@ run_with_prom "$_sysload_input" "$_prom_empty" -w 60 -t 3 -m http://fake-prom:90
 
 ok=1
 echo "$OUT" | grep -q "\[FLAPPING\]"     || ok=0
-echo "$OUT" | grep -qv "\[system @"      || ok=0
+! echo "$OUT" | grep -q "\[system @"      || ok=0
 
 if [[ $ok -eq 1 ]]; then
   pass "75: [system @ flap time] absent when Prometheus returns empty result"

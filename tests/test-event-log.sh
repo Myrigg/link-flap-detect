@@ -106,6 +106,25 @@ else
        "exit=$EXITCODE\n$OUT"
 fi
 
+# ── 220: --events date filter with regex metachar (dot) — no false matches ────
+_regex_evlog="$TESTDIR/test-regex-events.log"
+cat > "$_regex_evlog" <<'EOF'
+2026-03-01T10:00:00+0000	eth0	FLAPPING	transitions=5
+2026X03-01T12:00:00+0000	eth0	FLAPPING	transitions=8
+2026.03-01T14:00:00+0000	eth0	FLAPPING	transitions=3
+EOF
+OUT=''; EXITCODE=0
+OUT=$(EVENT_LOG="$_regex_evlog" bash "$SCRIPT" --events "2026.03" 2>&1) || EXITCODE=$?
+# Dot is literal: matches "2026.03" line only, not "2026-03" or "2026X03"
+if [[ $EXITCODE -eq 0 ]] \
+   && echo "$OUT" | grep -q "2026.03" \
+   && ! echo "$OUT" | grep -q "2026X03"; then
+  pass "220: --events date filter with dot does not match regex metachar"
+else
+  fail "220: --events date filter with dot does not match regex metachar" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
 # ── 221: --events all with malformed lines (no tabs, blank lines) — no crash ─
 _malformed_evlog="$TESTDIR/test-malformed-events.log"
 cat > "$_malformed_evlog" <<'EOF'
