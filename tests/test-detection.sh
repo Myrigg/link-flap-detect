@@ -526,3 +526,21 @@ if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "cannot parse\|parse"; then
 else
   fail "70: --since invalid date → exit 1 + error message" "exit=$EXITCODE\n$OUT"
 fi
+
+# 219. -t 0 is rejected (must be >= 2) → exit 1 + error
+t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
+run "$t" -t 0
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "219: invalid -t 0 → exit 1 + error message"
+else
+  fail "219: invalid -t 0 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+fi
+
+# 220. -w -1 is rejected (non-numeric / < 1) → exit 1 + error
+t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
+run "$t" -w -1
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error\|unknown option"; then
+  pass "220: invalid -w -1 → exit 1 + error message"
+else
+  fail "220: invalid -w -1 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+fi

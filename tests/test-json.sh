@@ -125,6 +125,28 @@ else
        "exit=$EXITCODE\n$OUT"
 fi
 
+# ── 222: -j with flapping data + wizard mock → valid JSON output ─────────────
+_json_wiz_dir=$(mktemp -d "$TESTDIR/json-wiz-XXXXXX")
+make_wizard_fixture "$_json_wiz_dir"
+OUT=''; EXITCODE=0
+OUT=$(BACKUP_DIR="$TESTDIR/json-backups" REPORT_DIR="$TESTDIR/json-reports" \
+      _LINK_FLAP_TEST_INPUT="$_json_log" \
+      _LINK_FLAP_TEST_WIZARD_DIR="$_json_wiz_dir" \
+      bash "$SCRIPT" -j -w 60 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] \
+   && echo "$OUT" | python3 -m json.tool > /dev/null 2>&1 \
+   && echo "$OUT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['summary']['flapping_found'] == True
+assert len(d['interfaces']) > 0
+" 2>/dev/null; then
+  pass "222: -j with flapping + wizard mock → valid JSON output"
+else
+  fail "222: -j with flapping + wizard mock → valid JSON output" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
 # ── 114: Correlation detected in JSON ────────────────────────────────────────
 _corr_log=$(mktemp "$TESTDIR/XXXXXX.log")
 cat > "$_corr_log" <<EOF

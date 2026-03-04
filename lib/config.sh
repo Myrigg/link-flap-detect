@@ -2,6 +2,11 @@
 # lib/config.sh — Persistent config file helpers.
 # Sourced by flap; do not execute directly.
 
+# _validate_url URL — return 0 if URL looks like a valid http(s) URL.
+_validate_url() {
+  [[ "$1" =~ ^https?://[a-zA-Z0-9] ]]
+}
+
 # _config_get KEY — print the stored value for KEY, or empty string.
 _config_get() {
   [[ ! -f "$_CONFIG_FILE" ]] && return 0
@@ -14,6 +19,14 @@ _save_config() {
   # Never persist config during test runs
   [[ -n "${_LINK_FLAP_TEST_INPUT:-}${_LINK_FLAP_TEST_TSHARK:-}${_LINK_FLAP_TEST_PROM:-}${_LINK_FLAP_TEST_NODE_EXPORTER:-}${_LINK_FLAP_TEST_IPERF3:-}${_LINK_FLAP_TEST_WIZARD_DIR:-}${_LINK_FLAP_TEST_PROM_ALL:-}" ]] && return 0
   [[ -z "$value" ]] && return 0
+  # Validate URL-type keys
+  case "$key" in
+    PROM_URL|WEBHOOK_URL|NODE_EXPORTER_URL)
+      if ! _validate_url "$value"; then
+        echo "Warning: not saving ${key} — invalid URL '${value}'." >&2
+        return 0
+      fi ;;
+  esac
   mkdir -p "$_CONFIG_DIR"
   local tmpf; tmpf=$(mktemp)
   [[ -f "$_CONFIG_FILE" ]] && grep -v "^${key}=" "$_CONFIG_FILE" > "$tmpf" 2>/dev/null || true
@@ -29,6 +42,18 @@ _load_config() {
     IPERF3_SERVER=$(_config_get "IPERF3_SERVER")
   [[ "$_WEBHOOK_URL_FROM_FLAG"  -eq 0 && -z "$WEBHOOK_URL"   ]] && \
     WEBHOOK_URL=$(_config_get "WEBHOOK_URL")
+  [[ "${_WINDOW_MINUTES_FROM_FLAG:-0}" -eq 0 && "$WINDOW_MINUTES" -eq 60 ]] && {
+    local _cfg_wm; _cfg_wm=$(_config_get "WINDOW_MINUTES")
+    [[ -n "$_cfg_wm" ]] && WINDOW_MINUTES="$_cfg_wm"
+  }
+  [[ "${_FLAP_THRESHOLD_FROM_FLAG:-0}" -eq 0 && "$FLAP_THRESHOLD" -eq 3 ]] && {
+    local _cfg_ft; _cfg_ft=$(_config_get "FLAP_THRESHOLD")
+    [[ -n "$_cfg_ft" ]] && FLAP_THRESHOLD="$_cfg_ft"
+  }
+  [[ "${_NODE_EXPORTER_URL_FROM_FLAG:-0}" -eq 0 && "$NODE_EXPORTER_URL" == "http://localhost:9100" ]] && {
+    local _cfg_ne; _cfg_ne=$(_config_get "NODE_EXPORTER_URL")
+    [[ -n "$_cfg_ne" ]] && NODE_EXPORTER_URL="$_cfg_ne"
+  }
   return 0  # prevent set -e exit when last && condition is false
 }
 
