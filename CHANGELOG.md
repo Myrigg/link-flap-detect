@@ -1,5 +1,49 @@
 # Changelog
 
+## [2026.03.04.4] — 2026-03-04
+
+### Mission-critical hardening — 5 phases, 19 fixes
+
+**Exit code contract** — three-way exit semantics: 0=clean, 1=flapping,
+2=tool/environment error. All argument validation and dependency checks now
+exit 2 instead of 1, so cron/automation can distinguish real flapping from
+misconfiguration.
+
+**Silent failure prevention:**
+- Fleet mode detects unreachable Prometheus before querying (exits 2 instead
+  of silently reporting "no flapping")
+- AWK getline in timestamp parsing guarded against failure
+- DUT carrier_changes threshold off-by-one fixed (> → >=)
+- New verdict branch when both NIC driver and switch port are SUSPECT
+
+**Data integrity:**
+- Event log writes wrapped in `flock` to prevent interleaved concurrent writes
+- Config file: `sync` before atomic `mv`
+- Wizard reports: atomic write (temp → sync → mv)
+
+**Operational safety:**
+- SSH remote mode (`-H`): timeouts on all operations, unique temp file via
+  remote `mktemp`, `BatchMode=yes` to prevent interactive hangs
+- Event log rotation: trimmed to 10,000 lines after each write
+- Report pruning: reports older than 90 days auto-deleted
+- Follow mode: graceful shutdown flag checked before re-exec
+- Wizard: pre-flight banner warns about missing optional tools (ethtool, lldpctl)
+- URL validation: informational note for private/loopback addresses
+
+**Edge case correctness:**
+- SFP DOM regex accepts integer dBm values (e.g. `-35 dBm`)
+- Drop rate rounding: nearest-integer instead of truncation at CAUSE boundary
+- JSON output: `_json_escape()` for user-supplied strings (IFACE_FILTER,
+  log_source) prevents malformed JSON from special characters
+
+### Tests
+
+- New `tests/test-exit-codes.sh` (8 tests for the three-way exit contract)
+- 6 additional tests: event log rotation, SSRF warning, JSON escape, DUT
+  boundary, L2drv+L2sw verdict, fleet unreachable Prometheus
+- 15 existing tests updated for exit code 2 semantics
+- Total: 205 tests passing (up from 191)
+
 ## [2026.03.04.3] — 2026-03-04
 
 ### Fault localization improvements
