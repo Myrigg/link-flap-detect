@@ -121,6 +121,7 @@ No package manager required. Runs on any Ubuntu 20.04+ system out of the box.
 | `--since DATE` | Scan from DATE (overrides `-w`). `YYYY-MM-DD [HH:MM:SS]` | (none) |
 | `--until DATE` | Scan up to DATE. Same format as `--since` | now |
 | **Other** | | |
+| `--config ACTION` | Config management: `show` prints saved values, `reset` clears all | |
 | `--update` | Update to the latest version from GitHub | |
 | `--version` | Print version and exit | |
 

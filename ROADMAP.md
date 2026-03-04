@@ -90,7 +90,9 @@ to re-type server addresses. For `-m`, flap prompts on the first interactive TTY
 set. For `-b`, the interactive prompt was replaced with auto-discovery (see below). CLI flags
 always win and are written back to config. `--update` never touches the config dir. Test
 helper `run_with_config()` in `tests/lib.sh` redirects `XDG_CONFIG_HOME` to the temp dir so
-config tests are isolated.
+config tests are isolated. `--config show` prints all saved settings; `--config reset` clears
+the config file. `WINDOW_MINUTES`, `FLAP_THRESHOLD`, and `NODE_EXPORTER_URL` are also
+persisted when passed as flags. URL-type keys are validated before saving.
 
 ### ~~iperf3 server auto-discovery (LLDP / gateway)~~ ✓ Done
 Removed the interactive iperf3 server prompts (`_prompt_iperf3`, `_prompt_iperf3_run`). In

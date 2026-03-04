@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026.03.04.2] — 2026-03-04
+
+### New features
+
+- **5 new wizard diagnostic checks** — MTU mismatch (local vs LLDP peer),
+  autonegotiation mismatch, FEC mode on 25G+ links, excessive pause frames,
+  and duplex mismatch (local Full / peer Half → [CAUSE]).
+
+- **`--config show|reset`** — `--config show` prints all persisted settings;
+  `--config reset` clears the config file.
+
+- **Additional persisted settings** — `WINDOW_MINUTES`, `FLAP_THRESHOLD`, and
+  `NODE_EXPORTER_URL` are now saved to config when passed as flags and loaded
+  on subsequent runs (flags always override).
+
+- **URL validation** — `_save_config` validates URL-type keys (`PROM_URL`,
+  `WEBHOOK_URL`, `NODE_EXPORTER_URL`) before persisting; invalid URLs are
+  rejected with a warning.
+
+### Tests
+
+- 16 new tests (177 total): wizard new checks (7), config management (5),
+  boundary validation (2), corrupted event log (1), JSON+wizard combined (1).
+
 ## [2026.03.04.1] — 2026-03-04
 
 ### Code quality
