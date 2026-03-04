@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–95, 96–99, 210–218, 219–222
+# Tests covered: 83–95, 96–99, 210–218, 219–219d, 220–222
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -674,11 +674,13 @@ run_wizard_test "$wiz_dir" -d eth0 -w 60
 ok=1
 [[ $EXITCODE -eq 0 ]]                             || ok=0
 echo "$OUT" | grep -qi "No fault detected"         || ok=0
+# Switch Port should be OK (not UNKNOWN) for a healthy link
+echo "$OUT" | grep -A3 "Layer 2 — Switch Port" | grep -qi "OK" || ok=0
 
 if [[ $ok -eq 1 ]]; then
-  pass "215: fault localization verdict 'No fault detected' (exit=$EXITCODE)"
+  pass "215: fault localization verdict 'No fault detected' + Switch Port OK (exit=$EXITCODE)"
 else
-  fail "215: fault localization verdict 'No fault detected'" "exit=$EXITCODE\n$OUT"
+  fail "215: fault localization verdict 'No fault detected' + Switch Port OK" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── 216: Verdict — "NIC DRIVER or firmware" ────────────────────────────────
@@ -806,6 +808,97 @@ if [[ $ok -eq 1 ]]; then
   pass "219: fault localization verdict mentions SWITCH PORT for half-duplex (exit=$EXITCODE)"
 else
   fail "219: fault localization verdict mentions SWITCH PORT for half-duplex" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 219b: Duplex mismatch → Switch Port SUSPECT + verdict mentions SWITCH PORT ─
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Full
+    Auto-negotiation: on
+    Link detected: yes
+    Link partner advertised auto-negotiation: Yes
+    Link partner advertised Duplex: Half
+EOF
+# All other layers healthy
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — Switch Port" | grep -qi "SUSPECT" || ok=0
+echo "$OUT" | grep -qi "Duplex mismatch"           || ok=0
+echo "$OUT" | grep -qi "VERDICT"                   || ok=0
+echo "$OUT" | grep -qi "SWITCH PORT"               || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "219b: duplex mismatch → Switch Port SUSPECT + verdict SWITCH PORT (exit=$EXITCODE)"
+else
+  fail "219b: duplex mismatch → Switch Port SUSPECT + verdict SWITCH PORT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 219c: Autoneg mismatch → Switch Port SUSPECT ──────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Full
+    Auto-negotiation: on
+    Link detected: yes
+    Link partner advertised auto-negotiation: No
+EOF
+# All other layers healthy
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — Switch Port" | grep -qi "SUSPECT" || ok=0
+echo "$OUT" | grep -qi "Autoneg mismatch"          || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "219c: autoneg mismatch → Switch Port SUSPECT (exit=$EXITCODE)"
+else
+  fail "219c: autoneg mismatch → Switch Port SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 219d: Healthy link → Switch Port OK ───────────────────────────────────
+wiz_dir=$(_fl_base)
+# Default _fl_base already has Full duplex, link up, autoneg on
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — Switch Port" | grep -qi "OK" || ok=0
+echo "$OUT" | grep -qi "No configuration issues detected"      || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "219d: healthy link → Switch Port OK (exit=$EXITCODE)"
+else
+  fail "219d: healthy link → Switch Port OK" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── 220: Duplex mismatch local Half / peer Full → [CAUSE] ───────────────
