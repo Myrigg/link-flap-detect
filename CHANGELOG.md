@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026.03.04.1] — 2026-03-04
+
+### Code quality
+
+- **Deduplicated JSON output** — extracted `_emit_json()` helper in `lib/utils.sh`;
+  both JSON emission paths (no-events and flapping) now share a single function.
+
+- **Webhook JSON escaping** — `_send_webhook()` now escapes backslashes and
+  double-quotes in the message before interpolating into JSON payloads.
+
+- **Prometheus reachability flag** — `_PROM_REACHABLE` flag distinguishes
+  "Prometheus unreachable" from "connected but no data" without a redundant
+  connectivity probe.
+
+- **ShellCheck clean** — added SC2034 suppressions for cross-file globals
+  (`DUT_IFACE`, `FIX_MODE`, `SINCE_ARG`, `FLAPPING_FOUND`). `shellcheck -S warning`
+  now exits 0.
+
+### Minor improvements
+
+- Large window warning: `-w` values exceeding 1440 (24h) emit a stderr warning.
+- `.gitignore` now includes `flap-standalone` build artifact.
+- Rollback output notes that file permissions are preserved from backup time.
+- Documented syslog year-boundary assumption in `lib/log-collection.sh`.
+
 ## [2026.03.04] — 2026-03-04
 
 ### Architecture
