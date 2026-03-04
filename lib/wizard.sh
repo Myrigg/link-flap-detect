@@ -771,6 +771,10 @@ run_wizard() {
     [adv_drv_name]="${_adv_drv_name:-}"
     [usb_dmesg_out]="${usb_dmesg_out:-}"
     [ncm_params_out]="${ncm_params_out:-}"
+    [duplex]="${duplex:-}"
+    [peer_duplex]="${peer_duplex:-}"
+    [autoneg]="${autoneg:-}"
+    [peer_autoneg]="${peer_autoneg:-}"
   )
   run_fault_localization _DIAG_DATA
 
@@ -808,6 +812,10 @@ run_fault_localization() {
   local _adv_drv_name="${_d[adv_drv_name]}"
   local usb_dmesg_out="${_d[usb_dmesg_out]}"
   local ncm_params_out="${_d[ncm_params_out]}"
+  local duplex="${_d[duplex]}"
+  local peer_duplex="${_d[peer_duplex]}"
+  local autoneg="${_d[autoneg]}"
+  local peer_autoneg="${_d[peer_autoneg]}"
 
   local SEP="════════════════════════════════════════════════════════════"
 
@@ -947,16 +955,43 @@ run_fault_localization() {
   # ── Layer 2: Switch Port ──────────────────────────────────────────────────
   local l2sw_status="UNKNOWN"
   local -a l2sw_evidence=()
+
+  # Half-duplex
   echo "$ethtool_out" | grep -qi "Duplex: Half" && \
     l2sw_status="SUSPECT" && l2sw_evidence+=("Half-duplex — autoneg mismatch with switch")
-  # STP changes detected would also be a switch indicator, but that's PCAP-only
+
+  # Duplex mismatch (local vs peer)
+  if [[ -n "${duplex:-}" && -n "${peer_duplex:-}" && "$duplex" != "$peer_duplex" ]]; then
+    l2sw_status="SUSPECT"
+    l2sw_evidence+=("Duplex mismatch (local ${duplex}, peer ${peer_duplex})")
+  fi
+
+  # Autoneg mismatch (local vs peer)
+  if [[ -n "${autoneg:-}" && -n "${peer_autoneg:-}" ]]; then
+    if [[ "$autoneg" == "on" && "$peer_autoneg" == "No" ]] || \
+       [[ "$autoneg" == "off" && "$peer_autoneg" == "Yes" ]]; then
+      l2sw_status="SUSPECT"
+      l2sw_evidence+=("Autoneg mismatch (local=${autoneg}, peer=${peer_autoneg})")
+    fi
+  fi
+
+  # If no issues found and link is up with known duplex → OK
+  if [[ "$l2sw_status" == "UNKNOWN" ]]; then
+    if echo "$ethtool_out" | grep -qi "Link detected: yes" && \
+       echo "$ethtool_out" | grep -qi "Duplex: Full"; then
+      l2sw_status="OK"
+    fi
+  fi
 
   local l2sw_col="$DIM"
   [[ "$l2sw_status" == "SUSPECT" ]] && l2sw_col="$RED"
+  [[ "$l2sw_status" == "OK" ]] && l2sw_col="$GREEN"
   _rpt "  Layer 2 — Switch Port"
   _rpt "    Status   : ${l2sw_col}${l2sw_status}${RESET}"
   if [[ "${#l2sw_evidence[@]}" -gt 0 ]]; then
     _rpt "    Evidence : $(IFS='; '; echo "${l2sw_evidence[*]}")"
+  elif [[ "$l2sw_status" == "OK" ]]; then
+    _rpt "    Note     : No configuration issues detected"
   else
     _rpt "    Note     : LLDP not available; no STP topology changes seen"
   fi
