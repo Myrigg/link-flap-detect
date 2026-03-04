@@ -499,8 +499,8 @@ run_wizard() {
     peer_duplex=$(echo "$ethtool_out" | grep -i "Link partner advertised" \
       | grep -oi "Half" | head -1 || true)
   fi
-  if [[ "${duplex:-}" == "Full" && "$peer_duplex" == "Half" ]]; then
-    findings+=("CAUSE"$'\t'"Duplex mismatch (local Full, peer Half)"$'\t'"This NIC is running Full duplex but the link partner is advertising Half duplex. A duplex mismatch is a classic cause of link flapping: the full-duplex side interprets the half-duplex side's deference as a link fault."$'\t'"Set both ends to autoneg: ethtool -s ${iface} autoneg on; or force both to full duplex on the switch")
+  if [[ -n "${duplex:-}" && -n "$peer_duplex" && "${duplex:-}" != "$peer_duplex" ]]; then
+    findings+=("CAUSE"$'\t'"Duplex mismatch (local ${duplex}, peer ${peer_duplex})"$'\t'"This NIC is running ${duplex} duplex but the link partner is advertising ${peer_duplex} duplex. A duplex mismatch is a classic cause of link flapping: the full-duplex side interprets the half-duplex side's deference as a link fault."$'\t'"Set both ends to autoneg: ethtool -s ${iface} autoneg on; or force both to full duplex on the switch")
   fi
 
   # 5. Historical system load at flap time (Prometheus, if configured)
@@ -1094,11 +1094,14 @@ run_fault_localization() {
     verdict="Physical layer and driver both show issues — address physical first (replace cable/SFP), then check driver/firmware."
   elif [[ "$l1_status" != "SUSPECT" && "$l2drv_status" == "SUSPECT" ]]; then
     verdict="NIC DRIVER or firmware issue — physical layer appears OK. Update driver or firmware; check dmesg for reset events."
+  elif [[ "$l2sw_status" == "SUSPECT" ]]; then
+    verdict="SWITCH PORT issue — half-duplex or autoneg mismatch detected. Check switch port configuration; align duplex and speed settings."
   elif [[ "$l3_status" == "SUSPECT" ]]; then
     verdict="GATEWAY/ROUTER unreachable — not a link-layer fault. Check the cable to the gateway and the gateway itself."
   elif [[ "$dns_status" == "SUSPECT" ]]; then
     verdict="DNS resolver issue — link is stable. Check /etc/resolv.conf and firewall rules for UDP port 53."
   elif [[ "$l1_status" == "OK" && "$l2drv_status" == "OK" && \
+          "$l2sw_status" != "SUSPECT" && \
           "$l3_status" != "SUSPECT" && "$dns_status" != "SUSPECT" ]]; then
     verdict="No fault detected at any monitored layer. The flap may have been transient; monitor with: ./flap -i ${iface} -f 30"
   else

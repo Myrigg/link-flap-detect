@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–95, 96–99, 210–218
+# Tests covered: 83–95, 96–99, 210–218, 219–222
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -775,4 +775,108 @@ if [[ $ok -eq 1 ]]; then
   pass "218: USB NIC fault localization shows 'driver limitation' not SUSPECT (exit=$EXITCODE)"
 else
   fail "218: USB NIC fault localization shows 'driver limitation' not SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 219: Switch Port SUSPECT → verdict mentions SWITCH PORT ──────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Half
+    Auto-negotiation: on
+    Link detected: yes
+EOF
+# All other layers healthy
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "VERDICT"                   || ok=0
+echo "$OUT" | grep -qi "SWITCH PORT"               || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "219: fault localization verdict mentions SWITCH PORT for half-duplex (exit=$EXITCODE)"
+else
+  fail "219: fault localization verdict mentions SWITCH PORT for half-duplex" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 220: Duplex mismatch local Half / peer Full → [CAUSE] ───────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 100Mb/s
+    Duplex: Half
+    Auto-negotiation: on
+    Link detected: yes
+    Link partner advertised auto-negotiation: Yes
+    Link partner advertised Duplex: Full
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                          || ok=0
+echo "$OUT" | grep -qi "\[CAUSE\]"                              || ok=0
+echo "$OUT" | grep -qi "Duplex mismatch"                        || ok=0
+echo "$OUT" | grep -qi "local Half.*peer Full\|Half.*Full"      || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "220: duplex mismatch local Half / peer Full → [CAUSE] (exit=$EXITCODE)"
+else
+  fail "220: duplex mismatch local Half / peer Full → [CAUSE]" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 221: RX CRC errors → Layer 1 SUSPECT ─────────────────────────────────
+wiz_dir=$(_fl_base)
+cat > "$wiz_dir/ethtool_s" <<'EOF'
+     rx_crc_errors: 42
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                                          || ok=0
+echo "$OUT" | grep -A3 "Layer 1 — Physical" | grep -qi "SUSPECT" || ok=0
+echo "$OUT" | grep -qi "CRC"                                    || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "221: RX CRC errors trigger Layer 1 SUSPECT (exit=$EXITCODE)"
+else
+  fail "221: RX CRC errors trigger Layer 1 SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 222: Firmware failure in dmesg → Layer 2 Driver SUSPECT ──────────────
+wiz_dir=$(_fl_base)
+printf '%s\n' "[12345.678] eth0: failed to load firmware rtl_nic/rtl8168g-2.fw" > "$wiz_dir/dmesg"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "NIC Driver\|Driver"        || ok=0
+echo "$OUT" | grep -q "SUSPECT"                    || ok=0
+echo "$OUT" | grep -qi "NIC DRIVER"                || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "222: firmware failure in dmesg → NIC Driver SUSPECT verdict (exit=$EXITCODE)"
+else
+  fail "222: firmware failure in dmesg → NIC Driver SUSPECT verdict" "exit=$EXITCODE\n$OUT"
 fi
