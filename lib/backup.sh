@@ -80,4 +80,5 @@ do_rollback() {
     exit 2
   fi
   echo -e "  ${GREEN}Done. ${restored} item(s) restored.${RESET}"
+  echo -e "  ${DIM}(File permissions are preserved from backup time.)${RESET}"
 }

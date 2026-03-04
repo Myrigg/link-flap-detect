@@ -20,6 +20,9 @@ _send_webhook() {
     return 0
   fi
 
+  # Escape characters that would break JSON string syntax
+  message=$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
   if [[ "$url" == *"discord.com"* ]]; then
     payload="{\"content\":\"${message}\",\"username\":\"link-flap-detect\"}"
   else
