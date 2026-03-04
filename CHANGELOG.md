@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026.03.04.3] — 2026-03-04
+
+### Fault localization improvements
+
+- **EEE + power management → L2drv SUSPECT** — EEE enabled or runtime PM
+  `auto` now triggers NIC Driver SUSPECT, surfacing root causes that were
+  previously invisible to the verdict.
+
+- **MTU mismatch → L2sw SUSPECT** — local MTU vs LLDP peer Maximum Frame Size
+  mismatch now marks Switch Port as SUSPECT with evidence detail.
+
+- **Combined L1 + L2sw verdict** — when both Physical and Switch Port are
+  SUSPECT, the verdict names both layers and advises addressing switch config
+  first.
+
+- **L2drv UNKNOWN accepted in "No fault"** — systems without `ethtool -i`
+  no longer fall through to the "ambiguous" catch-all verdict.
+
+- **DUT operstate display fix** — host operstate was always "unknown" in the
+  DUT comparison; now resolves correctly.
+
+- **Hoisted peer_mtu extraction** — removes a duplicate `lldpctl` call from
+  the findings block.
+
+### Tests
+
+- 7 new fault localization tests (235–241): EEE, PM, operstate, MTU mismatch,
+  UNKNOWN verdict, combined L1+L2sw, negative case. Total: 191 tests.
+
 ## [2026.03.04.2] — 2026-03-04
 
 ### New features
