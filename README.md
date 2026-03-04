@@ -34,7 +34,22 @@ curl -O https://raw.githubusercontent.com/Myrigg/link-flap-detect/main/flap
 chmod +x flap
 ```
 
-No build step, no package manager. Runs on any Ubuntu 20.04+ system out of the box.
+**System install:**
+
+```bash
+git clone https://github.com/Myrigg/link-flap-detect.git
+cd link-flap-detect
+sudo make install
+```
+
+**Standalone single-file download:**
+
+```bash
+curl -LO https://github.com/Myrigg/link-flap-detect/releases/latest/download/flap-standalone
+chmod +x flap-standalone
+```
+
+No package manager required. Runs on any Ubuntu 20.04+ system out of the box.
 
 **Self-update:** `./flap --update` — uses `git pull` for clones or re-downloads in-place for standalone installs.
 
@@ -107,6 +122,7 @@ No build step, no package manager. Runs on any Ubuntu 20.04+ system out of the b
 | `--until DATE` | Scan up to DATE. Same format as `--since` | now |
 | **Other** | | |
 | `--update` | Update to the latest version from GitHub | |
+| `--version` | Print version and exit | |
 
 Options can also be set via environment variables: `WINDOW_MINUTES`, `FLAP_THRESHOLD`, `IFACE_FILTER`. Flags take precedence.
 
@@ -219,4 +235,4 @@ By default, virtual and container interfaces are silently ignored: `lo`, `veth*`
 bash tests/run-tests.sh
 ```
 
-No root access or external dependencies required. The test suite (22 files, 160+ tests) injects synthetic log data and mocked tool output — none of the optional tools need to be installed. Individual test files can also be run in isolation: `bash tests/test-detection.sh`, etc.
+No root access or external dependencies required. The test suite (22 files, 161 tests) injects synthetic log data and mocked tool output — none of the optional tools need to be installed. Individual test files can also be run in isolation: `bash tests/test-detection.sh`, etc.

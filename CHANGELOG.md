@@ -1,6 +1,36 @@
 # Changelog
 
-## [Unreleased] — 2026-03-03
+## [2026.03.04] — 2026-03-04
+
+### Architecture
+
+- **Modularized into `lib/`** — the monolithic `flap` script (~2800 lines) is now a
+  ~850-line main script that sources 10 modules from `lib/`: backup, config, iperf3,
+  log-collection, menu, node-exporter, prometheus, utils, webhooks, wizard. All 161
+  tests pass without changes. `make bundle` produces a single-file `flap-standalone`
+  with all modules inlined.
+
+- **Build system** — `Makefile` with `make install` (installs `flap` + `lib/*.sh`),
+  `make bundle` (standalone single-file build), and `make uninstall`. Supports
+  `DESTDIR`, `BINDIR`, and `LIBDIR` overrides.
+
+- **`--version` flag** — prints version and exits. Bash 4+ guard added to fail
+  early on unsupported shells.
+
+### Bug fixes
+
+- **Wizard reliability** — corrected variable scope in `_rpt()` (promoted from nested
+  function to module-level), fixed misleading text in EEE findings, and prevented
+  unsafe fix suggestions for read-only sysfs attributes.
+
+### Testing
+
+- 18 new tests added (161 total, up from 143). New coverage for wizard contextual
+  enrichment, fault localization edge cases, and driver advisories.
+
+---
+
+## [2026.03.03] — 2026-03-03
 
 ### New features
 

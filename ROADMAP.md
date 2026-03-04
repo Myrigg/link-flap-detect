@@ -143,3 +143,12 @@ Parses `[CAUSE]` and `[WARN]` markers from saved `.txt` report files.
 `node_exporter --collector.textfile`. Emits `link_flap_is_flapping`,
 `link_flap_transitions_total` (per interface), and `link_flap_last_scan_timestamp`.
 Designed for cron: `*/15 * * * * ./flap --export /var/lib/node_exporter/flap.prom --quiet`.
+
+---
+
+## Tier 4 — Architecture
+
+### ~~Modularize into lib/ subdirectory~~ ✓ Done
+`flap` split from ~2800 lines to ~850-line main + 10 modules under `lib/`.
+`make install` installs both; `make bundle` creates a standalone single-file build.
+All 161 tests pass without modification.
