@@ -35,7 +35,7 @@ collect_from_syslog() {
 collect_from_tshark() {
   local pcap="$1"
   if ! command -v tshark &>/dev/null; then
-    echo "Error: tshark is not installed (required for -p)." >&2; exit 1
+    echo "Error: tshark is not installed (required for -p)." >&2; exit 2
   fi
 
   # ── STP Topology Change Notifications ─────────────────────────────────────
@@ -197,7 +197,7 @@ parse_events() {
       ts_safe = ts
       gsub(/[^A-Za-z0-9 :+TZ-]/, "", ts_safe)
       cmd = "date -d \047" ts_safe "\047 +%s 2>/dev/null || echo 0"
-      cmd | getline result
+      if ((cmd | getline result) <= 0) result = 0
       close(cmd)
       # Guard against syslog timestamps without a year (e.g. "Dec 31 14:00:00").
       # date(1) picks the current year, producing a future epoch when the log entry

@@ -173,3 +173,19 @@ else
   fail "114: -j correlation detected when two interfaces flap simultaneously" \
        "exit=$EXITCODE\n$OUT"
 fi
+
+# ── 260: -j with interface filter containing quotes → valid JSON ─────────────
+_q_log=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$_q_log"
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_INPUT="$_q_log" \
+      bash "$SCRIPT" -j -w 60 -i 'eth"0' 2>&1) || EXITCODE=$?
+if echo "$OUT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['config']['iface_filter'] == 'eth\"0'
+" 2>/dev/null; then
+  pass "260: -j with quotes in interface filter → valid JSON"
+else
+  fail "260: -j with quotes in interface filter → valid JSON" \
+       "exit=$EXITCODE\n$OUT"
+fi

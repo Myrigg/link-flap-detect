@@ -71,12 +71,12 @@ else
        "exit=$EXITCODE\nwebhook_log=$(cat "$wh_log")"
 fi
 
-# ── 103: Invalid -W URL (not http/https) → exit 1 + error message ─────────────
+# ── 103: Invalid -W URL (not http/https) → exit 2 + error message ─────────────
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 OUT=''; EXITCODE=0
 OUT=$(bash "$SCRIPT" -W ftp://bad-url 2>&1) || EXITCODE=$?
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "Error: -W must be"; then
-  pass "103: -W ftp://bad-url → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -q "Error: -W must be"; then
+  pass "103: -W ftp://bad-url → exit 2 + error message"
 else
-  fail "103: -W ftp://bad-url → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "103: -W ftp://bad-url → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi

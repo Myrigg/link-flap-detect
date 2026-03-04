@@ -126,6 +126,17 @@ _fleet_print_targets() {
 }
 
 fleet_scan_prometheus() {
+  # Pre-check: verify Prometheus is reachable before running fleet query.
+  # Without this, an unreachable Prometheus silently returns empty results,
+  # which looks like "no flapping" — a dangerous false negative.
+  if [[ -z "${_LINK_FLAP_TEST_PROM_ALL:-}" ]]; then
+    if ! curl -sf --max-time 5 "${PROM_URL}/api/v1/status/buildinfo" \
+         >/dev/null 2>&1; then
+      echo "Error: Prometheus at ${PROM_URL} is unreachable." >&2
+      return 2
+    fi
+  fi
+
   local query="increase(node_network_carrier_changes_total[${WINDOW_MINUTES}m])"
   local results
   results=$(prom_query_all "$query") || true

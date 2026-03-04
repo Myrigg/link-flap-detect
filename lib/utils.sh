@@ -25,7 +25,7 @@ _do_update() {
     git -C "$script_dir" pull
   else
     if ! command -v curl &>/dev/null; then
-      echo "Error: curl is required to update the standalone script." >&2; exit 1
+      echo "Error: curl is required to update the standalone script." >&2; exit 2
     fi
     local tmp
     tmp=$(mktemp)
@@ -36,7 +36,7 @@ _do_update() {
       echo -e "${GREEN}Updated successfully.${RESET}"
     else
       rm -f "$tmp"
-      echo "Update failed — check your internet connection." >&2; exit 1
+      echo "Update failed — check your internet connection." >&2; exit 2
     fi
   fi
   exit 0
@@ -67,7 +67,16 @@ _check_for_update() {
   fi
 }
 
-# ── JSON output helper ────────────────────────────────────────────────────────
+# ── JSON helpers ──────────────────────────────────────────────────────────────
+
+# _json_escape STRING — escape a string for safe embedding in JSON.
+_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}";
+  s="${s//$'\n'/\\n}"; s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
 # Emit the final JSON result object to stdout.  Called from two paths in flap
 # (no-events and flapping) to avoid duplicating the JSON schema.
 # Args: ifaces_json corr_detected flapping_found flapping_count flapping_ifaces_json
@@ -80,7 +89,7 @@ _emit_json() {
   [[ -n "${SINCE_EPOCH:-}" ]] && _j_since="\"$(date -d "@$SINCE_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
   _j_until="null"
   [[ -n "${UNTIL_EPOCH:-}" ]] && _j_until="\"$(date -d "@$UNTIL_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
-  if [[ -n "$IFACE_FILTER" ]]; then _j_iface_filter="\"${IFACE_FILTER}\""; else _j_iface_filter="null"; fi
+  if [[ -n "$IFACE_FILTER" ]]; then _j_iface_filter="\"$(_json_escape "$IFACE_FILTER")\""; else _j_iface_filter="null"; fi
   python3 -c "
 import json, sys
 data = json.loads(sys.stdin.read())
@@ -94,7 +103,7 @@ print()
     "window_minutes": ${WINDOW_MINUTES},
     "flap_threshold": ${FLAP_THRESHOLD},
     "iface_filter": ${_j_iface_filter},
-    "log_source": "${_JSON_LOG_SOURCE}",
+    "log_source": "$(_json_escape "${_JSON_LOG_SOURCE}")",
     "since": ${_j_since},
     "until": ${_j_until}
   },

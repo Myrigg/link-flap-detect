@@ -26,20 +26,20 @@ echo ""
 # ── 137: -H with malformed host → exit 1 + error ────────────────────────────
 OUT=''; EXITCODE=0
 OUT=$(bash "$SCRIPT" -H 'foo;rm -rf /' 2>&1) || EXITCODE=$?
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "invalid host"; then
-  pass "137: -H with malformed host → exit 1 + error"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "invalid host"; then
+  pass "137: -H with malformed host → exit 2 + error"
 else
-  fail "137: -H with malformed host → exit 1 + error" \
+  fail "137: -H with malformed host → exit 2 + error" \
        "exit=$EXITCODE\n$OUT"
 fi
 
 # ── 138: -H without argument → exit 1 + error ───────────────────────────────
 OUT=''; EXITCODE=0
 OUT=$(bash "$SCRIPT" -H 2>&1) || EXITCODE=$?
-if [[ $EXITCODE -eq 1 ]]; then
-  pass "138: -H without argument → exit 1 + error"
+if [[ $EXITCODE -eq 2 ]]; then
+  pass "138: -H without argument → exit 2 + error"
 else
-  fail "138: -H without argument → exit 1 + error" \
+  fail "138: -H without argument → exit 2 + error" \
        "exit=$EXITCODE\n$OUT"
 fi
 
@@ -48,14 +48,14 @@ fi
 OUT=''; EXITCODE=0
 _empty_bin=$(mktemp -d "$TESTDIR/empty-bin-XXXXXX")
 OUT=$(PATH="$_empty_bin" bash "$SCRIPT" -H testhost 2>&1) || EXITCODE=$?
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "ssh.*not installed"; then
-  pass "139: -H without ssh installed → exit 1 + error"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "ssh.*not installed"; then
+  pass "139: -H without ssh installed → exit 2 + error"
 else
   # ssh might be available in this environment; skip if so
   if command -v ssh >/dev/null 2>&1; then
     skip "139: -H without ssh installed (ssh is available, cannot simulate missing)"
   else
-    fail "139: -H without ssh installed → exit 1 + error" \
+    fail "139: -H without ssh installed → exit 2 + error" \
          "exit=$EXITCODE\n$OUT"
   fi
 fi

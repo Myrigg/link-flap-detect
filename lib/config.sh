@@ -4,7 +4,10 @@
 
 # _validate_url URL — return 0 if URL looks like a valid http(s) URL.
 _validate_url() {
-  [[ "$1" =~ ^https?://[a-zA-Z0-9] ]]
+  [[ "$1" =~ ^https?://[a-zA-Z0-9] ]] || return 1
+  if [[ "$1" =~ ^https?://(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|localhost) ]]; then
+    echo "Note: URL targets a private/loopback address: $1" >&2
+  fi
 }
 
 # _config_get KEY — print the stored value for KEY, or empty string.
@@ -31,6 +34,7 @@ _save_config() {
   local tmpf; tmpf=$(mktemp)
   [[ -f "$_CONFIG_FILE" ]] && grep -v "^${key}=" "$_CONFIG_FILE" > "$tmpf" 2>/dev/null || true
   printf '%s=%s\n' "$key" "$value" >> "$tmpf"
+  sync "$tmpf" 2>/dev/null || true
   mv "$tmpf" "$_CONFIG_FILE"
 }
 

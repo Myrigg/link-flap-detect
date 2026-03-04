@@ -46,8 +46,15 @@
 
 set -euo pipefail
 
+# ── Exit code contract ──────────────────────────────────────────────────────
+#   exit 0 — no flapping detected
+#   exit 1 — flapping detected
+#   exit 2 — tool/environment error (bad args, missing deps, I/O failure)
+# Automation (cron, scripts) can reliably distinguish "all clear" from
+# "flapping" from "the tool itself failed."
+
 if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-  echo "Error: bash 4+ required (found ${BASH_VERSION})." >&2; exit 1
+  echo "Error: bash 4+ required (found ${BASH_VERSION})." >&2; exit 2
 fi
 
 # ── Source library modules ─────────────────────────────────────────────────────
@@ -175,8 +182,8 @@ while getopts ":w:t:i:p:m:n:b:d:r:f:W:H:jvh" opt; do
     H) REMOTE_HOST="$OPTARG"   ;;
     v) VERBOSE=1                ;;
     h) usage                    ;;
-    :) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
-    \?) echo "Unknown option: -$OPTARG" >&2; exit 1 ;;
+    :) echo "Option -$OPTARG requires an argument." >&2; exit 2 ;;
+    \?) echo "Unknown option: -$OPTARG" >&2; exit 2 ;;
   esac
 done
 
@@ -184,10 +191,10 @@ done
 if [[ -n "$REMOTE_HOST" ]]; then
   # Validate host format (user@host or bare host/IP)
   if [[ ! "$REMOTE_HOST" =~ ^[a-zA-Z0-9._@-]+$ ]]; then
-    echo "Error: -H: invalid host format '${REMOTE_HOST}'." >&2; exit 1
+    echo "Error: -H: invalid host format '${REMOTE_HOST}'." >&2; exit 2
   fi
   if ! command -v ssh >/dev/null 2>&1; then
-    echo "Error: -H requires ssh but it is not installed." >&2; exit 1
+    echo "Error: -H requires ssh but it is not installed." >&2; exit 2
   fi
   # Build remote args: everything except -H
   _remote_args=()
@@ -196,12 +203,16 @@ if [[ -n "$REMOTE_HOST" ]]; then
     [[ "$_ra" == "$REMOTE_HOST" ]] && continue
     _remote_args+=("$_ra")
   done
-  _remote_tmp="/tmp/flap-remote-$$"
-  scp -q "$0" "${REMOTE_HOST}:${_remote_tmp}" || {
-    echo "Error: -H: failed to copy script to ${REMOTE_HOST}." >&2; exit 1
+  _remote_tmp=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$REMOTE_HOST" \
+    "mktemp /tmp/flap-remote-XXXXXX") || {
+    echo "Error: -H: failed to connect to ${REMOTE_HOST}." >&2; exit 2
+  }
+  timeout 30 scp -o ConnectTimeout=10 -q "$0" "${REMOTE_HOST}:${_remote_tmp}" || {
+    echo "Error: -H: failed to copy script to ${REMOTE_HOST}." >&2; exit 2
   }
   # shellcheck disable=SC2029
-  ssh "$REMOTE_HOST" "bash '${_remote_tmp}' ${_remote_args[*]+"${_remote_args[*]}"}; _rc=\$?; rm -f '${_remote_tmp}'; exit \$_rc"
+  timeout 300 ssh -o ConnectTimeout=10 -o BatchMode=yes "$REMOTE_HOST" \
+    "bash '${_remote_tmp}' ${_remote_args[*]+"${_remote_args[*]}"}; _rc=\$?; rm -f '${_remote_tmp}'; exit \$_rc"
   exit $?
 fi
 
@@ -238,7 +249,7 @@ if [[ -n "$_CONFIG_ACTION" ]]; then
       ;;
     *)
       echo "Error: --config accepts 'show' or 'reset', got '${_CONFIG_ACTION}'." >&2
-      exit 1
+      exit 2
       ;;
   esac
 fi
@@ -257,54 +268,54 @@ _prompt_prom_url
 # ── Validate numerics ─────────────────────────────────────────────────────────
 if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || \
    [[ "$WINDOW_MINUTES" -lt 1 ]] || [[ "$WINDOW_MINUTES" -gt 43200 ]]; then
-  echo "Error: -w must be between 1 and 43200 (minutes)." >&2; exit 1
+  echo "Error: -w must be between 1 and 43200 (minutes)." >&2; exit 2
 fi
 if [[ "$WINDOW_MINUTES" -gt 1440 ]]; then
   echo "Warning: -w ${WINDOW_MINUTES} (>24h) — scanning may be slow on large log files." >&2
 fi
 if ! [[ "$FLAP_THRESHOLD" =~ ^[0-9]+$ ]] || [[ "$FLAP_THRESHOLD" -lt 2 ]]; then
-  echo "Error: -t must be >= 2." >&2; exit 1
+  echo "Error: -t must be >= 2." >&2; exit 2
 fi
 if [[ -n "$PCAP_FILE" ]] && [[ ! -r "$PCAP_FILE" ]]; then
-  echo "Error: -p: cannot read file '$PCAP_FILE'." >&2; exit 1
+  echo "Error: -p: cannot read file '$PCAP_FILE'." >&2; exit 2
 fi
 if [[ -n "$PROM_URL" ]] && ! command -v curl &>/dev/null; then
-  echo "Error: -m requires curl (not found)." >&2; exit 1
+  echo "Error: -m requires curl (not found)." >&2; exit 2
 fi
 if [[ -n "$IPERF3_SERVER" ]] && [[ -z "${_LINK_FLAP_TEST_IPERF3:-}" ]] && \
    ! command -v iperf3 &>/dev/null; then
-  echo "Error: -b requires iperf3 (not found). Install with: apt install iperf3" >&2; exit 1
+  echo "Error: -b requires iperf3 (not found). Install with: apt install iperf3" >&2; exit 2
 fi
 if [[ -n "$FOLLOW_SECONDS" ]] && \
    { ! [[ "$FOLLOW_SECONDS" =~ ^[0-9]+$ ]] || [[ "$FOLLOW_SECONDS" -lt 1 ]]; }; then
-  echo "Error: -f must be a positive integer (seconds)." >&2; exit 1
+  echo "Error: -f must be a positive integer (seconds)." >&2; exit 2
 fi
 if [[ -n "$NODE_EXPORTER_URL" ]] && \
    [[ "$NODE_EXPORTER_URL" != "off" ]] && \
    ! [[ "$NODE_EXPORTER_URL" =~ ^https?:// ]]; then
-  echo "Error: -n must be 'off' or a URL starting with http:// or https://" >&2; exit 1
+  echo "Error: -n must be 'off' or a URL starting with http:// or https://" >&2; exit 2
 fi
 if [[ -n "$WEBHOOK_URL" ]] && ! [[ "$WEBHOOK_URL" =~ ^https?:// ]]; then
-  echo "Error: -W must be a URL starting with http:// or https://" >&2; exit 1
+  echo "Error: -W must be a URL starting with http:// or https://" >&2; exit 2
 fi
 if [[ "$FLEET_MODE" -eq 1 ]] && [[ -z "$PROM_URL" ]]; then
-  echo "Error: --fleet requires -m URL (Prometheus base URL)." >&2; exit 1
+  echo "Error: --fleet requires -m URL (Prometheus base URL)." >&2; exit 2
 fi
 if [[ -n "$SINCE_INPUT" ]]; then
   SINCE_EPOCH=$(_to_epoch "$SINCE_INPUT" "00:00:00")
   [[ -z "$SINCE_EPOCH" ]] && \
-    echo "Error: --since: cannot parse '$SINCE_INPUT' (use YYYY-MM-DD or 'YYYY-MM-DD HH:MM:SS')." >&2 && exit 1
+    echo "Error: --since: cannot parse '$SINCE_INPUT' (use YYYY-MM-DD or 'YYYY-MM-DD HH:MM:SS')." >&2 && exit 2
 fi
 if [[ -n "$UNTIL_INPUT" ]]; then
   UNTIL_EPOCH=$(_to_epoch "$UNTIL_INPUT" "23:59:59")
   [[ -z "$UNTIL_EPOCH" ]] && \
-    echo "Error: --until: cannot parse '$UNTIL_INPUT' (use YYYY-MM-DD or 'YYYY-MM-DD HH:MM:SS')." >&2 && exit 1
+    echo "Error: --until: cannot parse '$UNTIL_INPUT' (use YYYY-MM-DD or 'YYYY-MM-DD HH:MM:SS')." >&2 && exit 2
 fi
 if [[ -n "$SINCE_EPOCH" && -n "$UNTIL_EPOCH" ]] && [[ "$UNTIL_EPOCH" -le "$SINCE_EPOCH" ]]; then
-  echo "Error: --until must be after --since." >&2; exit 1
+  echo "Error: --until must be after --since." >&2; exit 2
 fi
 if [[ "$FLEET_MODE" -eq 1 && -n "$SINCE_EPOCH" ]]; then
-  echo "Error: --since/--until are not supported with --fleet." >&2; exit 1
+  echo "Error: --since/--until are not supported with --fleet." >&2; exit 2
 fi
 
 # ── Output redirection (--log-file, --quiet) ─────────────────────────────────
@@ -365,8 +376,12 @@ if [[ "$_SHOW_REPORTS" -eq 1 ]]; then
 fi
 
 # ── Temp file — cleaned up on exit ───────────────────────────────────────────
-TMPFILE=$(mktemp /tmp/link-flap-XXXXXX)
-trap 'rm -f "$TMPFILE"' EXIT INT TERM HUP
+TMPFILE=$(mktemp /tmp/link-flap-XXXXXX) || {
+  echo "Error: failed to create temp file." >&2; exit 2
+}
+_SHUTTING_DOWN=0
+_graceful_shutdown() { _SHUTTING_DOWN=1; rm -f "$TMPFILE"; }
+trap '_graceful_shutdown' EXIT INT TERM HUP
 
 if [[ -n "$ROLLBACK_ID" ]]; then do_rollback "$ROLLBACK_ID"; exit 0; fi
 
@@ -548,7 +563,9 @@ echo ""
 
 # Fleet mode: query Prometheus directly — bypass per-interface local-log analysis
 if [[ "$FLEET_MODE" -eq 1 ]]; then
-  fleet_scan_prometheus
+  _fleet_rc=0
+  fleet_scan_prometheus || _fleet_rc=$?
+  [[ "$_fleet_rc" -eq 2 ]] && exit 2
   exit $(( FLAPPING_FOUND ))
 fi
 
@@ -773,11 +790,27 @@ fi
 # Skipped in test mode unless EVENT_LOG is explicitly overridden.
 if [[ -z "${_LINK_FLAP_TEST_INPUT:-}" ]] || [[ "${EVENT_LOG}" == */test-* ]]; then
   _el_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
-  for _el_iface in "${FLAPPING_IFACES[@]}"; do
-    _el_t="${FLAPPING_TRANSITIONS[$_el_iface]:-0}"
-    mkdir -p "$(dirname "$EVENT_LOG")"
-    printf '%s\t%s\tFLAPPING\ttransitions=%s\n' "$_el_ts" "$_el_iface" "$_el_t" >> "$EVENT_LOG"
-  done
+  mkdir -p "$(dirname "$EVENT_LOG")"
+  (
+    flock -n 200 || {
+      echo "Warning: event log locked, skipping write." >&2
+      exit 0   # exits subshell only
+    }
+    for _el_iface in "${FLAPPING_IFACES[@]}"; do
+      _el_t="${FLAPPING_TRANSITIONS[$_el_iface]:-0}"
+      printf '%s\t%s\tFLAPPING\ttransitions=%s\n' "$_el_ts" "$_el_iface" "$_el_t" >> "$EVENT_LOG"
+    done
+  ) 200>>"$EVENT_LOG"
+
+  # Rotate event log: keep last 10,000 lines
+  if [[ -f "$EVENT_LOG" ]] && (( $(wc -l < "$EVENT_LOG") > 10000 )); then
+    tail -n 10000 "$EVENT_LOG" > "${EVENT_LOG}.tmp" \
+      && mv "${EVENT_LOG}.tmp" "$EVENT_LOG"
+  fi
+
+  # Prune reports older than 90 days
+  [[ -d "${REPORT_DIR:-}" ]] && \
+    find "$REPORT_DIR" -name '*.txt' -mtime +90 -delete 2>/dev/null || true
 fi
 
 # ── Prometheus textfile export (--export) ────────────────────────────────────
@@ -808,6 +841,7 @@ if [[ -n "$FOLLOW_SECONDS" ]]; then
   [[ -z "${_FLAP_NEXT_FLAPPING:-}" ]] && _FLAP_NEXT_FLAPPING="${FLAPPING_IFACES[*]:-}"
   echo -e "${DIM}--- next scan in ${FOLLOW_SECONDS}s (Ctrl-C to stop) ---${RESET}"
   sleep "$FOLLOW_SECONDS"
+  [[ "$_SHUTTING_DOWN" -eq 1 ]] && exit 0
   exec env _FLAP_FOLLOW_CHILD=1 \
     _FLAP_PREV_FLAPPING="${_FLAP_NEXT_FLAPPING:-}" \
     _FLAP_PREV_TRANSITIONS="${_FLAP_NEXT_TRANSITIONS:-}" \

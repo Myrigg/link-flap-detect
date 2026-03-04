@@ -122,6 +122,18 @@ run_wizard() {
   _REPORT_LINES=()   # reset for this wizard run
   mkdir -p "$BACKUP_DIR" "$REPORT_DIR"
 
+  # Warn about unavailable optional tools (skip in test mode)
+  if [[ -z "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
+    local _missing=()
+    command -v ethtool &>/dev/null || _missing+=("ethtool")
+    command -v lldpctl &>/dev/null || _missing+=("lldpctl")
+    if [[ ${#_missing[@]} -gt 0 ]]; then
+      _rpt "  Warning: unavailable tools (results may be incomplete):"
+      printf '    - %s\n' "${_missing[@]}"
+      _rpt ""
+    fi
+  fi
+
   # 1. Create backup
   local backup_id
   backup_id=$(create_backup "$iface")
@@ -129,7 +141,7 @@ run_wizard() {
   # 2. Validate interface (skipped in test mode)
   if [[ -z "${_LINK_FLAP_TEST_WIZARD_DIR:-}" ]]; then
     if ! ip link show "$iface" &>/dev/null; then
-      echo "Error: interface '$iface' not found." >&2; exit 1
+      echo "Error: interface '$iface' not found." >&2; exit 2
     fi
   fi
 
@@ -221,11 +233,11 @@ run_wizard() {
   if [[ -n "$dom_out" ]]; then
     rx_power_dbm=$(echo "$dom_out" \
       | grep -i "receiver signal\|rx power" \
-      | grep -oP '[-]?[0-9]+\.[0-9]+(?= dBm)' \
+      | grep -oP '[-]?[0-9]+(\.[0-9]+)?(?= dBm)' \
       | head -1 || true)
     tx_power_dbm=$(echo "$dom_out" \
       | grep -i "laser output power\|tx power" \
-      | grep -oP '[-]?[0-9]+\.[0-9]+(?= dBm)' \
+      | grep -oP '[-]?[0-9]+(\.[0-9]+)?(?= dBm)' \
       | head -1 || true)
   fi
 
@@ -336,7 +348,7 @@ run_wizard() {
       local _tx_drop_rate_pct _tx_drop_rate_int
       _tx_drop_rate_pct=$(awk -v d="$ne_tx_drop" -v p="$ne_tx_packets" \
         'BEGIN{printf "%.4f", d/p*100}')
-      _tx_drop_rate_int=$(awk -v v="$_tx_drop_rate_pct" 'BEGIN{printf "%d", v*1000}')
+      _tx_drop_rate_int=$(awk -v v="$_tx_drop_rate_pct" 'BEGIN{printf "%d", v*1000 + 0.5}')
       if [[ "$_tx_drop_rate_int" -gt 1000 ]]; then   # > 1.000%
         findings+=("CAUSE"$'\t'"Severe TX packet loss"$'\t'"${ne_tx_drop} TX drops out of ${ne_tx_packets} packets (${_tx_drop_rate_pct}% loss rate since boot). Loss >1% significantly degrades TCP throughput and indicates ring buffer exhaustion, driver overload, or physical layer instability."$'\t'"Check: ethtool -g ${iface} for ring buffer size; ethtool -S ${iface} | grep -i drop")
         _tx_drop_cause=1; _tx_drop_fired=1
@@ -363,7 +375,7 @@ run_wizard() {
       local _rx_drop_rate_pct _rx_drop_rate_int
       _rx_drop_rate_pct=$(awk -v d="$ne_rx_drop" -v p="$ne_rx_packets" \
         'BEGIN{printf "%.4f", d/p*100}')
-      _rx_drop_rate_int=$(awk -v v="$_rx_drop_rate_pct" 'BEGIN{printf "%d", v*1000}')
+      _rx_drop_rate_int=$(awk -v v="$_rx_drop_rate_pct" 'BEGIN{printf "%d", v*1000 + 0.5}')
       if [[ "$_rx_drop_rate_int" -gt 1000 ]]; then   # > 1.000%
         findings+=("CAUSE"$'\t'"Severe RX packet loss"$'\t'"${ne_rx_drop} RX drops out of ${ne_rx_packets} packets (${_rx_drop_rate_pct}% loss rate since boot). The receive buffer is discarding a significant fraction of incoming frames. Causes: NIC ring buffer too small, CPU interrupt starvation (/proc/net/softnet_stat time_squeeze), or physical layer instability."$'\t'"Check: ethtool -g ${iface} for ring buffer size; ethtool -K ${iface} gro on; check CPU load with top")
         _rx_drop_fired=1
@@ -783,8 +795,14 @@ run_wizard() {
   )
   run_fault_localization _DIAG_DATA
 
-  # 8. Save report (ANSI already stripped by _rpt)
-  printf '%s\n' "${_REPORT_LINES[@]}" > "${REPORT_DIR}/${backup_id}.txt"
+  # 8. Save report (ANSI already stripped by _rpt) — atomic write
+  local _rpt_tmp
+  _rpt_tmp=$(mktemp "${REPORT_DIR}/.report-XXXXXX") || {
+    echo "Warning: failed to write report." >&2; return 0
+  }
+  printf '%s\n' "${_REPORT_LINES[@]}" > "$_rpt_tmp"
+  sync "$_rpt_tmp" 2>/dev/null || true
+  mv "$_rpt_tmp" "${REPORT_DIR}/${backup_id}.txt"
 }
 
 # ── Fault Localization ────────────────────────────────────────────────────────
@@ -1109,7 +1127,7 @@ run_fault_localization() {
 
     if [[ -n "$dut_carrier_changes" && "$dut_carrier_changes" =~ ^[0-9]+$ && \
           -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ ]]; then
-      if (( dut_carrier_changes > carrier_changes * 5 && dut_carrier_changes > 20 )); then
+      if (( dut_carrier_changes >= carrier_changes * 5 && dut_carrier_changes > 20 )); then
         dut_status="SUSPECT"
         dut_evidence+=("DUT carrier changes (${dut_carrier_changes}) >> host (${carrier_changes})")
       fi
@@ -1151,6 +1169,9 @@ run_fault_localization() {
     verdict="Fault is most likely in the PHYSICAL LAYER (cable, SFP, or switch port)."
   elif [[ "$l1_status" == "SUSPECT" && "$l2drv_status" == "SUSPECT" ]]; then
     verdict="Physical layer and driver both show issues — address physical first (replace cable/SFP), then check driver/firmware."
+  elif [[ "$l1_status" != "SUSPECT" && "$l2drv_status" == "SUSPECT" && \
+          "$l2sw_status" == "SUSPECT" ]]; then
+    verdict="NIC DRIVER and SWITCH PORT both show issues — check switch port configuration (duplex/autoneg/MTU) and update NIC driver/firmware."
   elif [[ "$l1_status" != "SUSPECT" && "$l2drv_status" == "SUSPECT" ]]; then
     verdict="NIC DRIVER or firmware issue — physical layer appears OK. Update driver or firmware; check dmesg for reset events."
   elif [[ "$l2sw_status" == "SUSPECT" ]]; then

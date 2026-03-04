@@ -1181,3 +1181,72 @@ if [[ $ok -eq 1 ]]; then
 else
   fail "241: EEE disabled + power on → L2drv stays OK" "exit=$EXITCODE\n$OUT"
 fi
+
+# ── 242: DUT carrier_changes boundary — exactly 5x host triggers SUSPECT ─────
+wiz_dir=$(_fl_base)
+echo "4" > "$wiz_dir/carrier_changes"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+
+dut_dir=$(mktemp -d "$TESTDIR/dut-242-XXXXXX")
+echo "21"       > "$dut_dir/carrier_changes"
+echo "unknown"   > "$dut_dir/operstate"
+cat > "$dut_dir/dut_ethtool" <<'EOF'
+Settings for eth1:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: no
+EOF
+
+run_fault_loc_test "$wiz_dir" "$dut_dir" "eth1" -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                         || ok=0
+echo "$OUT" | grep -qi "DUT"                  || ok=0
+echo "$OUT" | grep -q "SUSPECT"               || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "242: DUT carrier_changes boundary (host=4, DUT=21, exactly >=5x) → SUSPECT (exit=$EXITCODE)"
+else
+  fail "242: DUT carrier_changes boundary (host=4, DUT=21, exactly >=5x) → SUSPECT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 243: L2drv+L2sw combined SUSPECT → verdict mentions both DRIVER and SWITCH
+wiz_dir=$(_fl_base)
+# EEE enabled → L2drv SUSPECT
+echo "EEE status: enabled" > "$wiz_dir/ethtool_eee"
+# Half-duplex → L2sw SUSPECT
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: 1000Mb/s
+    Duplex: Half
+    Auto-negotiation: on
+    Link detected: yes
+EOF
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: r8169
+version: 6.1.0-NAPI
+firmware-version: rtl8168g-2_0.0.1
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "NIC DRIVER"               || ok=0
+echo "$OUT" | grep -qi "SWITCH PORT"              || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "243: L2drv+L2sw combined SUSPECT → verdict mentions both DRIVER and SWITCH (exit=$EXITCODE)"
+else
+  fail "243: L2drv+L2sw combined SUSPECT → verdict mentions both DRIVER and SWITCH" "exit=$EXITCODE\n$OUT"
+fi

@@ -361,19 +361,19 @@ fi
 # 12. -w 0 is rejected as invalid → exit 1, error to stderr
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -w 0
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "12: invalid -w 0 → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "12: invalid -w 0 → exit 2 + error message"
 else
-  fail "12: invalid -w 0 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "12: invalid -w 0 → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 13. -t 1 is rejected (must be >= 2) → exit 1, error to stderr
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -t 1
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "13: invalid -t 1 → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "13: invalid -t 1 → exit 2 + error message"
 else
-  fail "13: invalid -t 1 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "13: invalid -t 1 → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 14. -h prints usage and exits 0 (does not hang or error)
@@ -388,19 +388,19 @@ fi
 # 51. -f 0 is rejected (must be >= 1) → exit 1 + error
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -f 0
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "51: invalid -f 0 → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "51: invalid -f 0 → exit 2 + error message"
 else
-  fail "51: invalid -f 0 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "51: invalid -f 0 → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 52. -f abc is rejected (non-numeric) → exit 1 + error
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -f abc
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "52: invalid -f abc → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "52: invalid -f abc → exit 2 + error message"
 else
-  fail "52: invalid -f abc → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "52: invalid -f abc → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 53. Empty log + -f 1 → "next scan" message appears; follow header shown
@@ -418,28 +418,28 @@ fi
 # 59. -n with invalid (non-http) URL → exit 1 + error
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -n ftp://bad-url
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "59: -n ftp://bad-url → exit 1 + error (-n URL validation)"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "59: -n ftp://bad-url → exit 2 + error (-n URL validation)"
 else
-  fail "59: -n ftp://bad-url → exit 1 + error (-n URL validation)" "exit=$EXITCODE\n$OUT"
+  fail "59: -n ftp://bad-url → exit 2 + error (-n URL validation)" "exit=$EXITCODE\n$OUT"
 fi
 
 # 63. -w 999999 (exceeds 43200 max) → exit 1 + error
 OUT=''; EXITCODE=0
 run /dev/null -w 999999
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "63: -w 999999 → exit 1 + error (exceeds max 43200)"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "63: -w 999999 → exit 2 + error (exceeds max 43200)"
 else
-  fail "63: -w 999999 → exit 1 + error (exceeds max 43200)" "exit=$EXITCODE\n$OUT"
+  fail "63: -w 999999 → exit 2 + error (exceeds max 43200)" "exit=$EXITCODE\n$OUT"
 fi
 
 # 64. -p /nonexistent → exit 1 + "cannot read" error
 OUT=''; EXITCODE=0
 run /dev/null -p /tmp/this-file-does-not-exist-link-flap-test.pcap
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "cannot read"; then
-  pass "64: -p /nonexistent → exit 1 + cannot read error"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "cannot read"; then
+  pass "64: -p /nonexistent → exit 2 + cannot read error"
 else
-  fail "64: -p /nonexistent → exit 1 + cannot read error" "exit=$EXITCODE\n$OUT"
+  fail "64: -p /nonexistent → exit 2 + cannot read error" "exit=$EXITCODE\n$OUT"
 fi
 
 # 65. -i zzzz_no_iface with a valid log → interface filter matches nothing → exit 0
@@ -512,35 +512,35 @@ fi
 # 69. --until before --since → exit 1 + error message
 OUT=''; EXITCODE=0
 run /dev/null --since "2026-02-28" --until "2026-02-27"
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "until.*after\|after.*since\|must be after"; then
-  pass "69: --until before --since → exit 1 + error message (exit=$EXITCODE)"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "until.*after\|after.*since\|must be after"; then
+  pass "69: --until before --since → exit 2 + error message (exit=$EXITCODE)"
 else
-  fail "69: --until before --since → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "69: --until before --since → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 70. --since with invalid date string → exit 1 + error message
 OUT=''; EXITCODE=0
 run /dev/null --since "not-a-date"
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "cannot parse\|parse"; then
-  pass "70: --since invalid date → exit 1 + error message (exit=$EXITCODE)"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "cannot parse\|parse"; then
+  pass "70: --since invalid date → exit 2 + error message (exit=$EXITCODE)"
 else
-  fail "70: --since invalid date → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "70: --since invalid date → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 219. -t 0 is rejected (must be >= 2) → exit 1 + error
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -t 0
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "219: invalid -t 0 → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "219: invalid -t 0 → exit 2 + error message"
 else
-  fail "219: invalid -t 0 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "219: invalid -t 0 → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
 
 # 220. -w -1 is rejected (non-numeric / < 1) → exit 1 + error
 t=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t"
 run "$t" -w -1
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error\|unknown option"; then
-  pass "220: invalid -w -1 → exit 1 + error message"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error\|unknown option"; then
+  pass "220: invalid -w -1 → exit 2 + error message"
 else
-  fail "220: invalid -w -1 → exit 1 + error message" "exit=$EXITCODE\n$OUT"
+  fail "220: invalid -w -1 → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
