@@ -1,5 +1,26 @@
 # Changelog
 
+## [2026.03.04.5] — 2026-03-04
+
+### Bug fixes — 6 confirmed bugs squashed
+
+**Production code (4 fixes):**
+- `--events` date filter: regex metacharacters no longer cause false matches
+  (grep → awk literal string comparison)
+- Webhook JSON escaping: newlines, tabs, and carriage returns now escaped via
+  `_json_escape` instead of incomplete inline sed
+- `_json_escape`: added carriage return (`\r`) handling
+- SSH remote mode (`-H`): args now shell-escaped with `printf '%q'` to handle
+  spaces in paths
+
+**Test suite (6 fixes):**
+- Fixed 4 vacuous `grep -qv` assertions (tests 66, 71, 72, 75) — replaced
+  with `! grep -q` which correctly asserts absence
+- Removed dead `section_grep` function from `tests/lib.sh`
+- Added test 220 (events date filter with regex metachar) and test 104
+  (`_json_escape` with newlines/tabs/CR)
+- Total: 207 tests passing (up from 205)
+
 ## [2026.03.04.4] — 2026-03-04
 
 ### Mission-critical hardening — 5 phases, 19 fixes
