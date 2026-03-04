@@ -105,3 +105,21 @@ else
   fail "119: --events with no log file → graceful 'no event log' message" \
        "exit=$EXITCODE\n$OUT"
 fi
+
+# ── 221: --events all with malformed lines (no tabs, blank lines) — no crash ─
+_malformed_evlog="$TESTDIR/test-malformed-events.log"
+cat > "$_malformed_evlog" <<'EOF'
+this line has no tabs at all
+2026-03-01T10:00:00+0000	eth0	FLAPPING	transitions=5
+
+just some random text
+2026-03-02T12:00:00+0000	eth0	FLAPPING	transitions=8
+EOF
+OUT=''; EXITCODE=0
+OUT=$(EVENT_LOG="$_malformed_evlog" bash "$SCRIPT" --events all 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 0 ]] && echo "$OUT" | grep -q "FLAPPING"; then
+  pass "221: --events all with malformed lines does not crash"
+else
+  fail "221: --events all with malformed lines does not crash" \
+       "exit=$EXITCODE\n$OUT"
+fi

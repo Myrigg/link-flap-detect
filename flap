@@ -35,6 +35,7 @@
 #   --dut IFACE   Device-under-test interface; wizard compares it against the primary interface
 #                 to determine whether the fault is in the DUT or in this computer's network
 #   --update      Update flap to the latest version from GitHub and exit
+#   --config ACTION  Config: 'show' prints saved values, 'reset' clears all
 #   --events [N|all|DATE]  Show recent entries from the persistent event log (default: last 20)
 #   --since DATE  Scan from DATE (overrides -w). Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
 #   --until DATE  Scan up to DATE (default: now). Same format as --since.
@@ -89,6 +90,10 @@ _CONFIG_FILE="${_CONFIG_DIR}/config"
 _PROM_URL_FROM_FLAG=0        # set to 1 when -m is explicitly passed
 _IPERF3_SERVER_FROM_FLAG=0   # set to 1 when -b is explicitly passed
 _WEBHOOK_URL_FROM_FLAG=0     # set to 1 when -W is explicitly passed
+_WINDOW_MINUTES_FROM_FLAG=0  # set to 1 when -w is explicitly passed
+_FLAP_THRESHOLD_FROM_FLAG=0  # set to 1 when -t is explicitly passed
+_NODE_EXPORTER_URL_FROM_FLAG=0 # set to 1 when -n is explicitly passed
+_CONFIG_ACTION=""             # --config show|reset
 _FLAP_INTERACTIVE_MODE=0     # set to 1 when no-arg interactive menu ran
 _INTERACTIVE_ARGS=()         # args to reconstruct for "re-run same test"
 JSON_MODE=0                  # set to 1 when -j is passed
@@ -147,6 +152,7 @@ while [[ $# -gt 0 ]]; do
     --log-file) LOG_FILE="${2:-}"; shift ;;
     --version)  echo "$VERSION"; exit 0 ;;
     --quiet)    QUIET_MODE=1 ;;
+    --config)   _CONFIG_ACTION="${2:-}"; shift ;;
     *)          _REBUILT_ARGS+=("$1") ;;
   esac
   shift
@@ -154,12 +160,12 @@ done
 set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
 while getopts ":w:t:i:p:m:n:b:d:r:f:W:H:jvh" opt; do
   case $opt in
-    w) WINDOW_MINUTES="$OPTARG" ;;
-    t) FLAP_THRESHOLD="$OPTARG" ;;
+    w) WINDOW_MINUTES="$OPTARG"; _WINDOW_MINUTES_FROM_FLAG=1 ;;
+    t) FLAP_THRESHOLD="$OPTARG"; _FLAP_THRESHOLD_FROM_FLAG=1 ;;
     i) IFACE_FILTER="$OPTARG"   ;;
     p) PCAP_FILE="$OPTARG"      ;;
     m) PROM_URL="$OPTARG";       _PROM_URL_FROM_FLAG=1     ;;
-    n) NODE_EXPORTER_URL="$OPTARG" ;;
+    n) NODE_EXPORTER_URL="$OPTARG"; _NODE_EXPORTER_URL_FROM_FLAG=1 ;;
     b) IPERF3_SERVER="$OPTARG";  _IPERF3_SERVER_FROM_FLAG=1 ;;
     d) DIAG_IFACE="$OPTARG"     ;;
     r) ROLLBACK_ID="$OPTARG"    ;;
@@ -205,10 +211,45 @@ fi
 # ── Load + prompt for server config ──────────────────────────────────────────
 _load_config
 
+# ── Config action (--config show|reset) ──────────────────────────────────────
+if [[ -n "$_CONFIG_ACTION" ]]; then
+  case "$_CONFIG_ACTION" in
+    show)
+      echo "Config file: ${_CONFIG_FILE}"
+      if [[ -f "$_CONFIG_FILE" ]]; then
+        echo ""
+        while IFS='=' read -r _ck _cv; do
+          [[ -z "$_ck" || "$_ck" == \#* ]] && continue
+          printf '  %-22s  %s\n' "$_ck" "$_cv"
+        done < "$_CONFIG_FILE"
+      else
+        echo "  (no saved config)"
+      fi
+      exit 0
+      ;;
+    reset)
+      if [[ -f "$_CONFIG_FILE" ]]; then
+        rm -f "$_CONFIG_FILE"
+        echo "Config cleared: ${_CONFIG_FILE}"
+      else
+        echo "No config file to clear."
+      fi
+      exit 0
+      ;;
+    *)
+      echo "Error: --config accepts 'show' or 'reset', got '${_CONFIG_ACTION}'." >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Persist values that were explicitly passed as flags
 [[ "$_PROM_URL_FROM_FLAG"      -eq 1 ]] && _save_config "PROM_URL"      "$PROM_URL"
 [[ "$_IPERF3_SERVER_FROM_FLAG" -eq 1 ]] && _save_config "IPERF3_SERVER" "$IPERF3_SERVER"
 [[ "$_WEBHOOK_URL_FROM_FLAG"   -eq 1 ]] && _save_config "WEBHOOK_URL"   "$WEBHOOK_URL"
+[[ "$_WINDOW_MINUTES_FROM_FLAG" -eq 1 ]] && _save_config "WINDOW_MINUTES" "$WINDOW_MINUTES"
+[[ "$_FLAP_THRESHOLD_FROM_FLAG" -eq 1 ]] && _save_config "FLAP_THRESHOLD" "$FLAP_THRESHOLD"
+[[ "$_NODE_EXPORTER_URL_FROM_FLAG" -eq 1 ]] && _save_config "NODE_EXPORTER_URL" "$NODE_EXPORTER_URL"
 
 # Interactive prompts (all self-guard for TTY / test mode)
 _prompt_prom_url

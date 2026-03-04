@@ -221,6 +221,9 @@ FIXTURE
   echo "nameserver 8.8.8.8"              > "$d/resolv_conf"
   echo ""                                  > "$d/ethtool_m"
   echo ""                                  > "$d/lldpctl"
+  echo ""                                  > "$d/ethtool_fec"
+  echo ""                                  > "$d/ethtool_a"
+  echo "1500"                              > "$d/mtu"
 }
 
 # section_grep SECTION_LABEL PATTERN

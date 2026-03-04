@@ -196,6 +196,19 @@ run_wizard() {
   duplex=$(echo "$ethtool_out" | grep -i "Duplex:" | awk '{print $2}' | head -1 || true)
   autoneg=$(echo "$ethtool_out" | grep -i "Auto-negotiation:" | awk '{print $2}' | head -1 || true)
 
+  # FEC mode (25G+ NICs only)
+  local ethtool_fec_out
+  ethtool_fec_out=$(_wiz_cmd ethtool_fec ethtool --show-fec "$iface")
+
+  # Pause frame / flow control
+  local ethtool_a_out
+  # shellcheck disable=SC2034  # ethtool_a_out is collected for fixture availability; pause data is in ethtool_s
+  ethtool_a_out=$(_wiz_cmd ethtool_a ethtool -a "$iface")
+
+  # Local MTU
+  local local_mtu
+  local_mtu=$(_wiz_read "/sys/class/net/${iface}/mtu")
+
   # SFP DOM (Digital Optical Monitoring) — silent on copper / unsupported NICs
   local dom_out rx_power_dbm="" tx_power_dbm=""
   dom_out=$(_wiz_cmd ethtool_m ethtool -m "$iface")
@@ -429,6 +442,65 @@ run_wizard() {
     else
       findings+=("INFO"$'\t'"Bond member of ${bond_master}"$'\t'"${iface} is a member of ${bond_master}${_bond_mode_label}. Bond carrier changes: ${bond_carrier_changes:-unknown}."$'\t'"Review bond status: cat /proc/net/bonding/${bond_master}")
     fi
+  fi
+
+  # MTU mismatch (local vs LLDP peer)
+  if [[ -n "$local_mtu" && "$local_mtu" =~ ^[0-9]+$ ]]; then
+    local lldp_raw_full
+    lldp_raw_full=$(_wiz_cmd lldpctl lldpctl "$iface")
+    local peer_mtu
+    peer_mtu=$(echo "$lldp_raw_full" | grep -i "Maximum Frame Size:" \
+      | grep -oP '[0-9]+' | head -1 || true)
+    if [[ -n "$peer_mtu" && "$peer_mtu" =~ ^[0-9]+$ ]] && \
+       [[ "$local_mtu" -ne "$peer_mtu" ]]; then
+      findings+=("WARN"$'\t'"MTU mismatch (local ${local_mtu} vs peer ${peer_mtu})"$'\t'"Local MTU is ${local_mtu} but LLDP peer advertises Maximum Frame Size ${peer_mtu}. Mismatched MTUs cause silent packet drops for frames exceeding the smaller value."$'\t'"Align MTUs: ip link set ${iface} mtu ${peer_mtu}; or adjust the switch port MTU")
+    fi
+  fi
+
+  # Autonegotiation mismatch (local vs link partner)
+  local peer_autoneg
+  peer_autoneg=$(echo "$ethtool_out" | grep -i "Link partner advertised auto-negotiation:" \
+    | awk '{print $NF}' | head -1 || true)
+  if [[ -n "$peer_autoneg" && -n "$autoneg" ]]; then
+    if [[ "$autoneg" == "on" && "$peer_autoneg" == "No" ]] || \
+       [[ "$autoneg" == "off" && "$peer_autoneg" == "Yes" ]]; then
+      findings+=("WARN"$'\t'"Autonegotiation mismatch (local=${autoneg}, peer=${peer_autoneg})"$'\t'"Local autoneg is ${autoneg} but link partner advertises ${peer_autoneg}. Autoneg mismatches cause speed/duplex negotiation failures and link instability."$'\t'"Align autoneg: ethtool -s ${iface} autoneg on; or match the switch port setting")
+    fi
+  fi
+
+  # FEC mode check (25G+ NICs only)
+  local speed_int
+  speed_int=$(echo "${speed:-}" | grep -oP '[0-9]+' | head -1 || true)
+  if [[ -n "$speed_int" && "$speed_int" =~ ^[0-9]+$ && "$speed_int" -ge 25000 ]]; then
+    local active_fec
+    active_fec=$(echo "$ethtool_fec_out" | grep -i "Active FEC" \
+      | awk -F: '{gsub(/^[ \t]+/,"",$2); print $2}' | head -1 || true)
+    if [[ -n "$active_fec" ]] && echo "$active_fec" | grep -qiE "Off|None|Not reported"; then
+      findings+=("WARN"$'\t'"FEC disabled on ${speed} link"$'\t'"Forward Error Correction is off (Active FEC: ${active_fec}) on a ${speed} link. 25G+ links have tighter signal margins and typically require FEC (Reed-Solomon or BaseR) for reliable operation."$'\t'"Enable FEC: ethtool --set-fec ${iface} encoding rs; or encoding baser")
+    fi
+  fi
+
+  # Pause frame / flow control
+  local rx_pause tx_pause
+  rx_pause=$(echo "$ethtool_s_out" | grep -i "rx_pause" \
+    | grep -oP '[0-9]+' | head -1 || true)
+  tx_pause=$(echo "$ethtool_s_out" | grep -i "tx_pause" \
+    | grep -oP '[0-9]+' | head -1 || true)
+  if [[ -n "$rx_pause" && "$rx_pause" =~ ^[0-9]+$ && "$rx_pause" -gt 1000 ]] || \
+     [[ -n "$tx_pause" && "$tx_pause" =~ ^[0-9]+$ && "$tx_pause" -gt 1000 ]]; then
+    findings+=("WARN"$'\t'"Excessive pause frames"$'\t'"rx_pause=${rx_pause:-0}, tx_pause=${tx_pause:-0}. High pause frame counts indicate flow control congestion between this NIC and the switch. Sustained pause frames can trigger carrier drops on some NICs."$'\t'"Review flow control: ethtool -a ${iface}; disable if not needed: ethtool -A ${iface} rx off tx off")
+  fi
+
+  # Duplex mismatch (local full, peer half)
+  local peer_duplex
+  peer_duplex=$(echo "$ethtool_out" | grep -i "Link partner.*Duplex:" \
+    | awk '{print $NF}' | head -1 || true)
+  if [[ -z "$peer_duplex" ]]; then
+    peer_duplex=$(echo "$ethtool_out" | grep -i "Link partner advertised" \
+      | grep -oi "Half" | head -1 || true)
+  fi
+  if [[ "${duplex:-}" == "Full" && "$peer_duplex" == "Half" ]]; then
+    findings+=("CAUSE"$'\t'"Duplex mismatch (local Full, peer Half)"$'\t'"This NIC is running Full duplex but the link partner is advertising Half duplex. A duplex mismatch is a classic cause of link flapping: the full-duplex side interprets the half-duplex side's deference as a link fault."$'\t'"Set both ends to autoneg: ethtool -s ${iface} autoneg on; or force both to full duplex on the switch")
   fi
 
   # 5. Historical system load at flap time (Prometheus, if configured)
