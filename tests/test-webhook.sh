@@ -85,6 +85,7 @@ fi
 # Source utils.sh to test _json_escape directly (used by _send_webhook for JSON payloads)
 _utils_path="$(dirname "${BASH_SOURCE[0]}")/../lib/utils.sh"
 if [[ -f "$_utils_path" ]]; then
+  # shellcheck source=../lib/utils.sh
   source "$_utils_path"
   _test_msg=$'line1\nline2\ttab\rCR "quoted"'
   _escaped=$(_json_escape "$_test_msg")
