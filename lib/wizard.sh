@@ -205,9 +205,15 @@ run_wizard() {
   # shellcheck disable=SC2034  # ethtool_a_out is collected for fixture availability; pause data is in ethtool_s
   ethtool_a_out=$(_wiz_cmd ethtool_a ethtool -a "$iface")
 
-  # Local MTU
-  local local_mtu
+  # Local MTU + LLDP peer MTU (hoisted for fault localization passthrough)
+  local local_mtu peer_mtu=""
   local_mtu=$(_wiz_read "/sys/class/net/${iface}/mtu")
+  if [[ -n "$local_mtu" && "$local_mtu" =~ ^[0-9]+$ ]]; then
+    local _lldp_mtu_raw
+    _lldp_mtu_raw=$(_wiz_cmd lldpctl lldpctl "$iface")
+    peer_mtu=$(echo "$_lldp_mtu_raw" | grep -i "Maximum Frame Size:" \
+      | grep -oP '[0-9]+' | head -1 || true)
+  fi
 
   # SFP DOM (Digital Optical Monitoring) — silent on copper / unsupported NICs
   local dom_out rx_power_dbm="" tx_power_dbm=""
@@ -444,17 +450,11 @@ run_wizard() {
     fi
   fi
 
-  # MTU mismatch (local vs LLDP peer)
-  if [[ -n "$local_mtu" && "$local_mtu" =~ ^[0-9]+$ ]]; then
-    local lldp_raw_full
-    lldp_raw_full=$(_wiz_cmd lldpctl lldpctl "$iface")
-    local peer_mtu
-    peer_mtu=$(echo "$lldp_raw_full" | grep -i "Maximum Frame Size:" \
-      | grep -oP '[0-9]+' | head -1 || true)
-    if [[ -n "$peer_mtu" && "$peer_mtu" =~ ^[0-9]+$ ]] && \
-       [[ "$local_mtu" -ne "$peer_mtu" ]]; then
-      findings+=("WARN"$'\t'"MTU mismatch (local ${local_mtu} vs peer ${peer_mtu})"$'\t'"Local MTU is ${local_mtu} but LLDP peer advertises Maximum Frame Size ${peer_mtu}. Mismatched MTUs cause silent packet drops for frames exceeding the smaller value."$'\t'"Align MTUs: ip link set ${iface} mtu ${peer_mtu}; or adjust the switch port MTU")
-    fi
+  # MTU mismatch (local vs LLDP peer) — peer_mtu hoisted to function scope
+  if [[ -n "$peer_mtu" && "$peer_mtu" =~ ^[0-9]+$ && \
+        -n "$local_mtu" && "$local_mtu" =~ ^[0-9]+$ ]] && \
+     [[ "$local_mtu" -ne "$peer_mtu" ]]; then
+    findings+=("WARN"$'\t'"MTU mismatch (local ${local_mtu} vs peer ${peer_mtu})"$'\t'"Local MTU is ${local_mtu} but LLDP peer advertises Maximum Frame Size ${peer_mtu}. Mismatched MTUs cause silent packet drops for frames exceeding the smaller value."$'\t'"Align MTUs: ip link set ${iface} mtu ${peer_mtu}; or adjust the switch port MTU")
   fi
 
   # Autonegotiation mismatch (local vs link partner)
@@ -775,6 +775,11 @@ run_wizard() {
     [peer_duplex]="${peer_duplex:-}"
     [autoneg]="${autoneg:-}"
     [peer_autoneg]="${peer_autoneg:-}"
+    [ethtool_eee_out]="${ethtool_eee_out:-}"
+    [power_control]="${power_control:-}"
+    [operstate]="${operstate:-}"
+    [local_mtu]="${local_mtu:-}"
+    [peer_mtu]="${peer_mtu:-}"
   )
   run_fault_localization _DIAG_DATA
 
@@ -816,6 +821,11 @@ run_fault_localization() {
   local peer_duplex="${_d[peer_duplex]}"
   local autoneg="${_d[autoneg]}"
   local peer_autoneg="${_d[peer_autoneg]}"
+  local ethtool_eee_out="${_d[ethtool_eee_out]}"
+  local power_control="${_d[power_control]}"
+  local operstate="${_d[operstate]}"
+  local local_mtu="${_d[local_mtu]}"
+  local peer_mtu="${_d[peer_mtu]}"
 
   local SEP="════════════════════════════════════════════════════════════"
 
@@ -928,6 +938,10 @@ run_fault_localization() {
         -n "$carrier_changes" && "$carrier_changes" =~ ^[0-9]+$ && "$carrier_changes" -lt 5 ]]; then
     l2drv_status="SUSPECT"
   fi
+  # EEE enabled — CAUSE-level NIC configuration issue
+  echo "$ethtool_eee_out" | grep -qi "EEE status: enabled" && l2drv_status="SUSPECT"
+  # Runtime PM enabled — CAUSE-level NIC configuration issue
+  [[ "${power_control:-}" == "auto" ]] && l2drv_status="SUSPECT"
 
   local l2drv_col="$GREEN"
   [[ "$l2drv_status" == "SUSPECT" ]] && l2drv_col="$RED"
@@ -973,6 +987,13 @@ run_fault_localization() {
       l2sw_status="SUSPECT"
       l2sw_evidence+=("Autoneg mismatch (local=${autoneg}, peer=${peer_autoneg})")
     fi
+  fi
+
+  # MTU mismatch (local vs LLDP peer)
+  if [[ -n "$local_mtu" && -n "$peer_mtu" && "$local_mtu" =~ ^[0-9]+$ && \
+        "$peer_mtu" =~ ^[0-9]+$ && "$local_mtu" -ne "$peer_mtu" ]]; then
+    l2sw_status="SUSPECT"
+    l2sw_evidence+=("MTU mismatch (local ${local_mtu}, peer ${peer_mtu})")
   fi
 
   # If no issues found and link is up with known duplex → OK
@@ -1122,8 +1143,11 @@ run_fault_localization() {
   local verdict=""
   if [[ -n "$dut_verdict" ]]; then
     verdict="$dut_verdict"
+  elif [[ "$l1_status" == "SUSPECT" && "$l2sw_status" == "SUSPECT" && \
+          "$l2drv_status" != "SUSPECT" && "$l3_status" != "SUSPECT" ]]; then
+    verdict="PHYSICAL LAYER and SWITCH PORT both affected — address switch port configuration first (duplex/autoneg/MTU), then replace cable if issues persist."
   elif [[ "$l1_status" == "SUSPECT" && "$l2drv_status" != "SUSPECT" && \
-          "$l3_status" != "SUSPECT" ]]; then
+          "$l2sw_status" != "SUSPECT" && "$l3_status" != "SUSPECT" ]]; then
     verdict="Fault is most likely in the PHYSICAL LAYER (cable, SFP, or switch port)."
   elif [[ "$l1_status" == "SUSPECT" && "$l2drv_status" == "SUSPECT" ]]; then
     verdict="Physical layer and driver both show issues — address physical first (replace cable/SFP), then check driver/firmware."
@@ -1135,7 +1159,8 @@ run_fault_localization() {
     verdict="GATEWAY/ROUTER unreachable — not a link-layer fault. Check the cable to the gateway and the gateway itself."
   elif [[ "$dns_status" == "SUSPECT" ]]; then
     verdict="DNS resolver issue — link is stable. Check /etc/resolv.conf and firewall rules for UDP port 53."
-  elif [[ "$l1_status" == "OK" && "$l2drv_status" == "OK" && \
+  elif [[ "$l1_status" == "OK" && \
+          ( "$l2drv_status" == "OK" || "$l2drv_status" == "UNKNOWN" ) && \
           "$l2sw_status" != "SUSPECT" && \
           "$l3_status" != "SUSPECT" && "$dns_status" != "SUSPECT" ]]; then
     verdict="No fault detected at any monitored layer. The flap may have been transient; monitor with: ./flap -i ${iface} -f 30"

@@ -2,7 +2,7 @@
 # tests/test-fault-localization.sh
 # Automated tests: fault localization — layer-by-layer fault report.
 #
-# Tests covered: 83–95, 96–99, 210–218, 219–219d, 220–222
+# Tests covered: 83–95, 96–99, 210–218, 219–219d, 220–222, 235–241
 #
 # Verifies that the [FAULT LOCALIZATION] section of the wizard report
 # correctly identifies:
@@ -50,6 +50,11 @@ EOF
   echo "" > "$d/dmesg"
   # No EEE
   echo "EEE status: disabled" > "$d/ethtool_eee"
+  # Power management off (not auto)
+  echo "on"   > "$d/power_control"
+  # MTU — healthy, no LLDP peer mismatch
+  echo "1500" > "$d/mtu"
+  echo ""     > "$d/lldpctl"
   # Stable routing
   echo "default via 192.168.1.1 dev eth0" > "$d/ip_route"
   # No VPN interfaces
@@ -972,4 +977,207 @@ if [[ $ok -eq 1 ]]; then
   pass "222: firmware failure in dmesg → NIC Driver SUSPECT verdict (exit=$EXITCODE)"
 else
   fail "222: firmware failure in dmesg → NIC Driver SUSPECT verdict" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 235: EEE enabled → L2drv SUSPECT + NIC DRIVER verdict ──────────────────
+wiz_dir=$(_fl_base)
+echo "EEE status: enabled" > "$wiz_dir/ethtool_eee"
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: r8169
+version: 6.1.0-NAPI
+firmware-version: rtl8168g-2_0.0.1
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — NIC Driver" | grep -qi "SUSPECT" || ok=0
+echo "$OUT" | grep -qi "NIC DRIVER"                || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "235: EEE enabled → L2drv SUSPECT + NIC DRIVER verdict (exit=$EXITCODE)"
+else
+  fail "235: EEE enabled → L2drv SUSPECT + NIC DRIVER verdict" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 236: power/control=auto → L2drv SUSPECT + NIC DRIVER verdict ───────────
+wiz_dir=$(_fl_base)
+echo "auto" > "$wiz_dir/power_control"
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: igb
+version: 5.14.2-k
+firmware-version: 3.25.0
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — NIC Driver" | grep -qi "SUSPECT" || ok=0
+echo "$OUT" | grep -qi "NIC DRIVER"                || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "236: power/control=auto → L2drv SUSPECT + NIC DRIVER verdict (exit=$EXITCODE)"
+else
+  fail "236: power/control=auto → L2drv SUSPECT + NIC DRIVER verdict" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 237: operstate shown correctly in DUT section ──────────────────────────
+wiz_dir=$(_fl_base)
+echo "2" > "$wiz_dir/carrier_changes"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+
+dut_dir=$(mktemp -d "$TESTDIR/dut-237-XXXXXX")
+echo "5000"    > "$dut_dir/carrier_changes"
+echo "down"    > "$dut_dir/operstate"
+cat > "$dut_dir/dut_ethtool" <<'EOF'
+Settings for eth1:
+    Speed: Unknown!
+    Duplex: Unknown!
+    Auto-negotiation: off
+    Link detected: no
+EOF
+
+run_fault_loc_test "$wiz_dir" "$dut_dir" "eth1" -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+# Host operstate should show "up", not "unknown"
+echo "$OUT" | grep -i "Link state" | grep -qi "up" || ok=0
+# Should NOT show "unknown" for host side
+if echo "$OUT" | grep -i "Link state.*vs host" | grep -qi ": unknown"; then ok=0; fi
+
+if [[ $ok -eq 1 ]]; then
+  pass "237: operstate shown correctly in DUT section — host shows 'up' (exit=$EXITCODE)"
+else
+  fail "237: operstate shown correctly in DUT section — host shows 'up'" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 238: MTU mismatch → L2sw SUSPECT + SWITCH PORT verdict ────────────────
+wiz_dir=$(_fl_base)
+echo "1500" > "$wiz_dir/mtu"
+echo "  Maximum Frame Size: 9000" > "$wiz_dir/lldpctl"
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — Switch Port" | grep -qi "SUSPECT" || ok=0
+echo "$OUT" | grep -qi "MTU mismatch"              || ok=0
+echo "$OUT" | grep -qi "SWITCH PORT"               || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "238: MTU mismatch (1500 vs 9000) → L2sw SUSPECT + SWITCH PORT verdict (exit=$EXITCODE)"
+else
+  fail "238: MTU mismatch (1500 vs 9000) → L2sw SUSPECT + SWITCH PORT verdict" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 239: L2drv UNKNOWN (no ethtool -i) → verdict "No fault detected" ──────
+wiz_dir=$(_fl_base)
+# No ethtool_i file → L2drv UNKNOWN
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — NIC Driver" | grep -qi "UNKNOWN" || ok=0
+echo "$OUT" | grep -qi "No fault detected"         || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "239: L2drv UNKNOWN → verdict still 'No fault detected' (exit=$EXITCODE)"
+else
+  fail "239: L2drv UNKNOWN → verdict still 'No fault detected'" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 240: L1 SUSPECT + L2sw SUSPECT → combined verdict PHYSICAL + SWITCH PORT
+wiz_dir=$(_fl_base)
+echo "1000" > "$wiz_dir/carrier_changes"
+cat > "$wiz_dir/ethtool" <<'EOF'
+Settings for eth0:
+    Speed: Unknown!
+    Duplex: Half
+    Auto-negotiation: off
+    Link detected: no
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -qi "PHYSICAL"                   || ok=0
+echo "$OUT" | grep -qi "SWITCH PORT"                || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "240: L1 + L2sw SUSPECT → combined verdict PHYSICAL + SWITCH PORT (exit=$EXITCODE)"
+else
+  fail "240: L1 + L2sw SUSPECT → combined verdict PHYSICAL + SWITCH PORT" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 241: EEE disabled + power on → L2drv stays OK (negative test) ──────────
+wiz_dir=$(_fl_base)
+# _fl_base already sets EEE disabled + power on — verify L2drv is not SUSPECT
+cat > "$wiz_dir/ethtool_i" <<'EOF'
+driver: igb
+version: 5.14.2-k
+firmware-version: 3.25.0
+EOF
+cat > "$wiz_dir/ping_gw" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+cat > "$wiz_dir/ping_inet" <<'EOF'
+1 packets transmitted, 1 received, 0% packet loss
+EOF
+echo "142.250.80.46" > "$wiz_dir/dig_dns"
+
+run_wizard_test "$wiz_dir" -d eth0 -w 60
+
+ok=1
+[[ $EXITCODE -eq 0 ]]                             || ok=0
+echo "$OUT" | grep -A3 "Layer 2 — NIC Driver" | grep -qi "OK" || ok=0
+echo "$OUT" | grep -qi "No fault detected"         || ok=0
+# Must NOT be SUSPECT
+if echo "$OUT" | grep -A3 "Layer 2 — NIC Driver" | grep -qi "SUSPECT"; then ok=0; fi
+
+if [[ $ok -eq 1 ]]; then
+  pass "241: EEE disabled + power on → L2drv stays OK (exit=$EXITCODE)"
+else
+  fail "241: EEE disabled + power on → L2drv stays OK" "exit=$EXITCODE\n$OUT"
 fi
