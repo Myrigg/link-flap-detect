@@ -45,10 +45,10 @@ fi
 # ── 232: --config invalid → exit 1 + error ──────────────────────────────────
 OUT=''; EXITCODE=0
 OUT=$(bash "$SCRIPT" --config badarg 2>&1) || EXITCODE=$?
-if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -qi "error"; then
-  pass "232: --config invalid → exit 1 + error"
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "232: --config invalid → exit 2 + error"
 else
-  fail "232: --config invalid → exit 1 + error" "exit=$EXITCODE\n$OUT"
+  fail "232: --config invalid → exit 2 + error" "exit=$EXITCODE\n$OUT"
 fi
 
 # ── 233: Persisted WINDOW_MINUTES loads from config ──────────────────────────
@@ -67,4 +67,21 @@ if echo "$OUT" | grep -q "last 10m"; then
   pass "234: Flag -w 10 overrides persisted WINDOW_MINUTES=15"
 else
   fail "234: Flag -w 10 overrides persisted WINDOW_MINUTES=15" "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 259: Private URL emits SSRF warning on stderr ────────────────────────────
+# Source the config library to test _validate_url directly
+_cfg259_dir="$TESTDIR/cfg259"
+mkdir -p "$_cfg259_dir"
+OUT=''; EXITCODE=0
+OUT=$(bash -c '
+  _CONFIG_DIR="'"$_cfg259_dir"'"
+  _CONFIG_FILE="$_CONFIG_DIR/config"
+  source "'"$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"'"
+  _validate_url "http://192.168.1.1:9090" 2>&1
+') || EXITCODE=$?
+if echo "$OUT" | grep -qi "private\|loopback"; then
+  pass "259: private URL → SSRF warning on stderr"
+else
+  fail "259: private URL → SSRF warning on stderr" "exit=$EXITCODE\n$OUT"
 fi

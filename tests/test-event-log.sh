@@ -123,3 +123,29 @@ else
   fail "221: --events all with malformed lines does not crash" \
        "exit=$EXITCODE\n$OUT"
 fi
+
+# ── 258: Event log rotation — 10,001 lines trimmed to 10,000 ─────────────────
+_rot_log="$TESTDIR/test-rotation-events.log"
+# Create a log with 10,001 lines (pre-existing)
+for i in $(seq 1 10001); do
+  printf '2026-01-01T00:00:00+0000\teth0\tFLAPPING\ttransitions=%d\n' "$i"
+done > "$_rot_log"
+_rot_input=$(mktemp "$TESTDIR/XXXXXX.log")
+ts() { date -u -d "now - $1 seconds" "+%b %e %H:%M:%S" 2>/dev/null || date -u "+%b %e %H:%M:%S"; }
+cat > "$_rot_input" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 499) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 498) host kernel: eth0: NIC Link is Down
+$(ts 497) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+EOF
+OUT=''; EXITCODE=0
+OUT=$(EVENT_LOG="$_rot_log" \
+      _LINK_FLAP_TEST_INPUT="$_rot_input" \
+      bash "$SCRIPT" -w 60 2>&1) || EXITCODE=$?
+_rot_lines=$(wc -l < "$_rot_log")
+if [[ "$_rot_lines" -le 10000 ]]; then
+  pass "258: event log rotation — ${_rot_lines} lines (trimmed from 10,001+)"
+else
+  fail "258: event log rotation — expected <=10000, got ${_rot_lines}" \
+       "exit=$EXITCODE\n$OUT"
+fi

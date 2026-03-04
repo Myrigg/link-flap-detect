@@ -100,6 +100,8 @@ source "$TESTS_DIR/test-exporter.sh"
 source "$TESTS_DIR/test-wizard-new-checks.sh"
 # shellcheck source=tests/test-config.sh
 source "$TESTS_DIR/test-config.sh"
+# shellcheck source=tests/test-exit-codes.sh
+source "$TESTS_DIR/test-exit-codes.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL=$(( PASS + FAIL ))

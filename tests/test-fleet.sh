@@ -197,11 +197,27 @@ OUT=''; EXITCODE=0
 OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-73" bash "$SCRIPT" --fleet 2>&1) || EXITCODE=$?
 
 ok=1
-[[ $EXITCODE -eq 1 ]]                               || ok=0
+[[ $EXITCODE -eq 2 ]]                               || ok=0
 echo "$OUT" | grep -qi "requires -m"                || ok=0
 
 if [[ $ok -eq 1 ]]; then
-  pass "73: --fleet without -m — exits 1 with error message (exit=$EXITCODE)"
+  pass "73: --fleet without -m — exits 2 with error message (exit=$EXITCODE)"
 else
-  fail "73: --fleet without -m — exits 1 with error message" "exit=$EXITCODE\n$OUT"
+  fail "73: --fleet without -m — exits 2 with error message" "exit=$EXITCODE\n$OUT"
+fi
+
+# 74. Fleet scan with unreachable Prometheus → exit 2 + error message
+# Use a non-routable IP to simulate unreachable Prometheus.
+OUT=''; EXITCODE=0
+OUT=$(XDG_CONFIG_HOME="$TESTDIR/cfg-74" \
+      bash "$SCRIPT" -m http://192.0.2.1:9090 --fleet 2>&1) || EXITCODE=$?
+
+ok=1
+[[ $EXITCODE -eq 2 ]]                                || ok=0
+echo "$OUT" | grep -qi "unreachable"                 || ok=0
+
+if [[ $ok -eq 1 ]]; then
+  pass "74: fleet scan — unreachable Prometheus → exit 2 + error (exit=$EXITCODE)"
+else
+  fail "74: fleet scan — unreachable Prometheus → exit 2 + error" "exit=$EXITCODE\n$OUT"
 fi
