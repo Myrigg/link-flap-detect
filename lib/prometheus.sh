@@ -3,6 +3,7 @@
 # Sourced by flap; do not execute directly.
 
 _PROM_REACHED=0
+_PROM_REACHABLE=0   # 1 once any curl to Prometheus succeeds (even with no data)
 
 prom_query() {
   # Query Prometheus instant API; return first result value or empty string.
@@ -167,6 +168,7 @@ fleet_scan_prometheus() {
     [[ -n "$tx_err" ]] && printf "  TX errors       : %.2f/min\n" "$tx_err"
     echo ""
     flapping_found=1
+    # shellcheck disable=SC2034  # FLAPPING_FOUND is read in flap main script
     FLAPPING_FOUND=1
   done <<< "$results"
 
@@ -187,6 +189,15 @@ show_prometheus_context() {
   local iface="$1"
   [[ -z "$PROM_URL" && -z "${_LINK_FLAP_TEST_PROM:-}" ]] && return
   [[ "$iface" =~ ^(stp|lacp)- ]] && return
+
+  # One-time reachability probe (runs outside subshell so the flag persists)
+  if [[ "$_PROM_REACHABLE" -eq 0 ]]; then
+    if [[ -n "${_LINK_FLAP_TEST_PROM:-}" ]]; then
+      _PROM_REACHABLE=1
+    elif curl -sf --max-time 3 "${PROM_URL}/api/v1/query?query=1" >/dev/null 2>&1; then
+      _PROM_REACHABLE=1
+    fi
+  fi
 
   local up carrier rx_err tx_err rx_drop tx_drop
   up=$(prom_query "node_network_up{device=\"$iface\"}")

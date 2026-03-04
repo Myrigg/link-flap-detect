@@ -67,6 +67,50 @@ _check_for_update() {
   fi
 }
 
+# ── JSON output helper ────────────────────────────────────────────────────────
+# Emit the final JSON result object to stdout.  Called from two paths in flap
+# (no-events and flapping) to avoid duplicating the JSON schema.
+# Args: ifaces_json corr_detected flapping_found flapping_count flapping_ifaces_json
+_emit_json() {
+  local ifaces_json="${1:-}" corr_detected="${2:-false}"
+  local flap_found="${3:-false}" flap_count="${4:-0}" flap_ifaces_json="${5:-}"
+  local _j_ts _j_since _j_until _j_iface_filter
+  _j_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
+  _j_since="null"
+  [[ -n "${SINCE_EPOCH:-}" ]] && _j_since="\"$(date -d "@$SINCE_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
+  _j_until="null"
+  [[ -n "${UNTIL_EPOCH:-}" ]] && _j_until="\"$(date -d "@$UNTIL_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
+  if [[ -n "$IFACE_FILTER" ]]; then _j_iface_filter="\"${IFACE_FILTER}\""; else _j_iface_filter="null"; fi
+  python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+json.dump(data, sys.stdout, indent=2)
+print()
+" <<EOF
+{
+  "version": "${VERSION}",
+  "timestamp": "${_j_ts}",
+  "config": {
+    "window_minutes": ${WINDOW_MINUTES},
+    "flap_threshold": ${FLAP_THRESHOLD},
+    "iface_filter": ${_j_iface_filter},
+    "log_source": "${_JSON_LOG_SOURCE}",
+    "since": ${_j_since},
+    "until": ${_j_until}
+  },
+  "interfaces": [${ifaces_json}],
+  "correlation": {
+    "detected": ${corr_detected}
+  },
+  "summary": {
+    "flapping_found": ${flap_found},
+    "flapping_count": ${flap_count},
+    "flapping_interfaces": [${flap_ifaces_json}]
+  }
+}
+EOF
+}
+
 # ── Date helpers ──────────────────────────────────────────────────────────────
 # Convert a date/datetime string to a Unix epoch.
 # Accepts "YYYY-MM-DD HH:MM:SS" or bare "YYYY-MM-DD".

@@ -202,6 +202,8 @@ parse_events() {
       # Guard against syslog timestamps without a year (e.g. "Dec 31 14:00:00").
       # date(1) picks the current year, producing a future epoch when the log entry
       # is from December and the tool runs in January. Pull it back one year.
+      # Assumption: syslog entries are at most ~1 year old. Logs >2 years old may
+      # silently misparse — this is an inherent syslog limitation (no year field).
       if ((result + 0) > (now + 86400))
         result = result - 31536000
       epoch_cache[ts] = result

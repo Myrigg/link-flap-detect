@@ -94,6 +94,7 @@ _INTERACTIVE_ARGS=()         # args to reconstruct for "re-run same test"
 JSON_MODE=0                  # set to 1 when -j is passed
 LOG_FILE=""                  # --log-file: append output to file
 QUIET_MODE=0                 # --quiet: suppress all stdout
+# shellcheck disable=SC2034  # FIX_MODE is read in lib/wizard.sh
 FIX_MODE=0                   # --fix: auto-apply wizard fixes
 _SHOW_REPORTS=0              # --reports: list saved reports
 REMOTE_HOST=""               # -H: run on remote machine via SSH
@@ -124,18 +125,23 @@ _ORIG_ARGS=("$@")
 
 # Pre-parse long options (getopts does not handle --foo).
 FLEET_MODE=0
+# shellcheck disable=SC2034  # DUT_IFACE is read in lib/wizard.sh
 DUT_IFACE=""
 _EVENTS_QUERY=""
 _REBUILT_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fleet)  FLEET_MODE=1 ;;
-    --dut)    DUT_IFACE="${2:-}"; shift ;;
+    --dut)
+      # shellcheck disable=SC2034  # DUT_IFACE is read in lib/wizard.sh
+      DUT_IFACE="${2:-}"; shift ;;
     --update) _do_update ;;
     --since)  SINCE_INPUT="${2:-}"; shift ;;
     --until)  UNTIL_INPUT="${2:-}"; shift ;;
     --events)   _EVENTS_QUERY="${2:-20}"; shift ;;
-    --fix)      FIX_MODE=1 ;;
+    --fix)
+      # shellcheck disable=SC2034  # FIX_MODE is read in lib/wizard.sh
+      FIX_MODE=1 ;;
     --export)   EXPORT_FILE="${2:-}"; shift ;;
     --reports)  _SHOW_REPORTS=1 ;;
     --log-file) LOG_FILE="${2:-}"; shift ;;
@@ -211,6 +217,9 @@ _prompt_prom_url
 if ! [[ "$WINDOW_MINUTES" =~ ^[0-9]+$ ]] || \
    [[ "$WINDOW_MINUTES" -lt 1 ]] || [[ "$WINDOW_MINUTES" -gt 43200 ]]; then
   echo "Error: -w must be between 1 and 43200 (minutes)." >&2; exit 1
+fi
+if [[ "$WINDOW_MINUTES" -gt 1440 ]]; then
+  echo "Warning: -w ${WINDOW_MINUTES} (>24h) — scanning may be slow on large log files." >&2
 fi
 if ! [[ "$FLAP_THRESHOLD" =~ ^[0-9]+$ ]] || [[ "$FLAP_THRESHOLD" -lt 2 ]]; then
   echo "Error: -t must be >= 2." >&2; exit 1
@@ -327,6 +336,7 @@ if [[ -n "$ROLLBACK_ID" ]]; then do_rollback "$ROLLBACK_ID"; exit 0; fi
 #
 # We try journald first (Ubuntu 24.04 default). Fall back to flat log files.
 
+# shellcheck disable=SC2034  # SINCE_ARG is read in lib/log-collection.sh
 SINCE_ARG="${WINDOW_MINUTES} minutes ago"
 
 # ── Step 2: Populate TMPFILE ──────────────────────────────────────────────────
@@ -517,37 +527,7 @@ if [[ ${#IFACES[@]} -eq 0 ]]; then
   fi
   if [[ "$JSON_MODE" -eq 1 ]]; then
     exec 1>&3
-    _j_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
-    _j_since="null"
-    [[ -n "${SINCE_EPOCH:-}" ]] && _j_since="\"$(date -d "@$SINCE_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
-    _j_until="null"
-    [[ -n "${UNTIL_EPOCH:-}" ]] && _j_until="\"$(date -d "@$UNTIL_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
-    python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-json.dump(data, sys.stdout, indent=2)
-print()
-" <<EOF
-{
-  "version": "${VERSION}",
-  "timestamp": "${_j_ts}",
-  "config": {
-    "window_minutes": ${WINDOW_MINUTES},
-    "flap_threshold": ${FLAP_THRESHOLD},
-    "iface_filter": $(if [[ -n "$IFACE_FILTER" ]]; then echo "\"${IFACE_FILTER}\""; else echo "null"; fi),
-    "log_source": "${_JSON_LOG_SOURCE}",
-    "since": ${_j_since},
-    "until": ${_j_until}
-  },
-  "interfaces": [],
-  "correlation": {"detected": false},
-  "summary": {
-    "flapping_found": false,
-    "flapping_count": 0,
-    "flapping_interfaces": []
-  }
-}
-EOF
+    _emit_json "" "false" "false" "0" ""
   fi
   exit 0
 fi
@@ -647,19 +627,13 @@ for iface in "${IFACES[@]}"; do
 done
 
 # Warn if Prometheus was configured but returned no data.
-# Distinguish two cases: Prometheus unreachable vs. connected but no metrics for this interface.
+# _PROM_REACHABLE is set by prom_query/prom_query_at on successful curl;
+# _PROM_REACHED is set by show_prometheus_context when data was found.
 if [[ -n "$PROM_URL" ]] && [[ "$_PROM_REACHED" -eq 0 ]]; then
-  _prom_connected=0
-  if [[ -n "${_LINK_FLAP_TEST_PROM:-}" ]]; then
-    # Test hook active — treat as a successful Prometheus response (hook simulates real data path)
-    _prom_connected=1
-  elif curl -sf --max-time 3 "${PROM_URL}/api/v1/query?query=1%2B1" >/dev/null 2>&1; then
-    _prom_connected=1
-  fi
-  if [[ "$_prom_connected" -eq 1 ]]; then
+  if [[ "$_PROM_REACHABLE" -eq 1 ]]; then
     echo -e "${DIM}(Prometheus connected but no network metrics found for this interface — check that node_exporter is running and exposing /sys/class/net metrics)${RESET}"
   else
-    echo -e "${DIM}(Prometheus at ${PROM_URL} returned no data — verify connectivity)${RESET}"
+    echo -e "${DIM}(Prometheus at ${PROM_URL} is unreachable — verify connectivity)${RESET}"
   fi
   echo ""
 fi
@@ -801,7 +775,6 @@ fi
 # ── JSON output emission ─────────────────────────────────────────────────────
 if [[ "$JSON_MODE" -eq 1 ]]; then
   exec 1>&3  # restore real stdout
-  _j_ts=$(date -u "+%Y-%m-%dT%H:%M:%S+0000")
   _j_ifaces_arr=""
   for _ji in "${_JSON_IFACES[@]+"${_JSON_IFACES[@]}"}"; do
     [[ -n "$_j_ifaces_arr" ]] && _j_ifaces_arr+=","
@@ -814,38 +787,9 @@ if [[ "$JSON_MODE" -eq 1 ]]; then
   done
   _j_corr="false"
   [[ "$_JSON_CORRELATION" == "true" ]] && _j_corr="true"
-  _j_since="null"
-  [[ -n "${SINCE_EPOCH:-}" ]] && _j_since="\"$(date -d "@$SINCE_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
-  _j_until="null"
-  [[ -n "${UNTIL_EPOCH:-}" ]] && _j_until="\"$(date -d "@$UNTIL_EPOCH" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null)\""
-  python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-json.dump(data, sys.stdout, indent=2)
-print()
-" <<EOF
-{
-  "version": "${VERSION}",
-  "timestamp": "${_j_ts}",
-  "config": {
-    "window_minutes": ${WINDOW_MINUTES},
-    "flap_threshold": ${FLAP_THRESHOLD},
-    "iface_filter": $(if [[ -n "$IFACE_FILTER" ]]; then echo "\"${IFACE_FILTER}\""; else echo "null"; fi),
-    "log_source": "${_JSON_LOG_SOURCE}",
-    "since": ${_j_since},
-    "until": ${_j_until}
-  },
-  "interfaces": [${_j_ifaces_arr}],
-  "correlation": {
-    "detected": ${_j_corr}
-  },
-  "summary": {
-    "flapping_found": $(if [[ "$FLAPPING_FOUND" -eq 1 ]]; then echo "true"; else echo "false"; fi),
-    "flapping_count": ${FLAPPING_COUNT},
-    "flapping_interfaces": [${_j_flapping_arr}]
-  }
-}
-EOF
+  _j_flap_found="false"
+  [[ "$FLAPPING_FOUND" -eq 1 ]] && _j_flap_found="true"
+  _emit_json "$_j_ifaces_arr" "$_j_corr" "$_j_flap_found" "$FLAPPING_COUNT" "$_j_flapping_arr"
   exit $(( FLAPPING_FOUND ))
 fi
 

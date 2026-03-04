@@ -85,10 +85,10 @@ OUT=$(_LINK_FLAP_TEST_INPUT="$t" bash "$SCRIPT" -w 60 -t 3 \
       -m http://127.0.0.1:19999 2>&1) || EXITCODE=$?
 if [[ $EXITCODE -eq 1 ]] \
    && echo "$OUT" | grep -q "\[FLAPPING\]" \
-   && echo "$OUT" | grep -q "returned no data"; then
-  pass "62: Prometheus unreachable → dim 'returned no data' note in output"
+   && echo "$OUT" | grep -q "is unreachable"; then
+  pass "62: Prometheus unreachable → dim 'is unreachable' note in output"
 else
-  fail "62: Prometheus unreachable → dim 'returned no data' note in output" "exit=$EXITCODE\n$OUT"
+  fail "62: Prometheus unreachable → dim 'is unreachable' note in output" "exit=$EXITCODE\n$OUT"
 fi
 
 # 63. Prometheus reachable but empty result → "no network metrics found" (not "verify connectivity")
