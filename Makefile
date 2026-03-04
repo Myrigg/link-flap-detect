@@ -15,16 +15,16 @@ uninstall:
 
 # Build a standalone single-file script with all libs inlined (for -H remote mode).
 bundle:
-	@{ \
-	  sed '/^# ── Source library modules/,/^unset _LIB_DIR/d' flap | \
-	    sed '/^VERSION=/i # ── Inlined library modules ─────────────────────────────────────────────────'; \
-	  echo ""; \
-	  for f in lib/*.sh; do \
-	    echo "# --- $$f ---"; \
-	    grep -v '^#!/usr/bin/env bash' "$$f"; \
-	    echo ""; \
-	  done; \
-	} > flap-standalone
+	@awk '\
+	  /^# ── Source library modules/,/^unset _LIB_DIR/ { \
+	    if (/^# ── Source library modules/) { \
+	      print "# ── Inlined library modules ─────────────────────────────────────────────────"; \
+	      cmd = "for f in lib/*.sh; do echo \"# --- $$f ---\"; grep -v \"^#!/usr/bin/env bash\" \"$$f\"; echo; done"; \
+	      system(cmd); \
+	    } \
+	    next; \
+	  } \
+	  { print }' flap > flap-standalone
 	@chmod +x flap-standalone
 	@echo "Built flap-standalone ($$(wc -l < flap-standalone) lines)"
 

@@ -10,43 +10,38 @@ Detect network interface link flapping from system logs and packet captures.
 ## Quick Start
 
 ```bash
-curl -O https://raw.githubusercontent.com/Myrigg/link-flap-detect/main/flap
-chmod +x flap
+curl -LO https://github.com/Myrigg/link-flap-detect/releases/latest/download/flap-standalone
+chmod +x flap-standalone
 
-./flap                   # scan the last hour
-./flap -d eth0           # diagnose a flapping interface
-./flap -f 30             # watch in real time (Ctrl-C to stop)
+./flap-standalone                   # scan the last hour
+./flap-standalone -d eth0           # diagnose a flapping interface
+./flap-standalone -f 30             # watch in real time (Ctrl-C to stop)
 ```
 
 ## Install
 
-**Clone:**
+**Standalone (single file, no dependencies):**
+
+```bash
+curl -LO https://github.com/Myrigg/link-flap-detect/releases/latest/download/flap-standalone
+chmod +x flap-standalone
+sudo mv flap-standalone /usr/local/bin/flap
+```
+
+**Clone (for development or running from source):**
 
 ```bash
 git clone https://github.com/Myrigg/link-flap-detect.git
 cd link-flap-detect
+./flap
 ```
 
-**Or download the script directly:**
-
-```bash
-curl -O https://raw.githubusercontent.com/Myrigg/link-flap-detect/main/flap
-chmod +x flap
-```
-
-**System install:**
+**System install (from clone):**
 
 ```bash
 git clone https://github.com/Myrigg/link-flap-detect.git
 cd link-flap-detect
 sudo make install
-```
-
-**Standalone single-file download:**
-
-```bash
-curl -LO https://github.com/Myrigg/link-flap-detect/releases/latest/download/flap-standalone
-chmod +x flap-standalone
 ```
 
 No package manager required. Runs on any Ubuntu 20.04+ system out of the box.
