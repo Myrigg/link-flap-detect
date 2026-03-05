@@ -83,6 +83,8 @@ VERSION="2026.03.05"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 WINDOW_MINUTES=${WINDOW_MINUTES:-60}
+# Default: 3 transitions. No universal standard; Cisco IOS defaults to 5 per 10s.
+# Configurable via -t because the right value depends on link type and environment.
 FLAP_THRESHOLD=${FLAP_THRESHOLD:-3}
 IFACE_FILTER=${IFACE_FILTER:-""}
 PCAP_FILE=${PCAP_FILE:-""}
@@ -758,6 +760,8 @@ fi
 # ── Cross-interface correlation ────────────────────────────────────────────────
 # If 2+ interfaces are flapping, check whether any of their events fell in the
 # same 10-second bucket — a strong hint of a common upstream cause.
+# 10s window balances STP fast-forward (2s) through LACP slow timeout (90s);
+# wide enough to catch related events, narrow enough to avoid false correlation.
 if [[ "$FLAPPING_COUNT" -ge 2 ]]; then
   _corr=$(awk '
   {

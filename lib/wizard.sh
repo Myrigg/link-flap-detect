@@ -277,7 +277,9 @@ run_wizard() {
   # 4. Build findings array — each entry: "LEVEL<tab>Title<tab>Description<tab>Fix"
   local -a findings=()
 
-  # Carrier instability — two severity tiers
+  # Carrier instability — two severity tiers.
+  # Expected healthy range: 1–5 changes over a system's lifetime (initial autoneg + reboots).
+  # >20 = more than a few planned events; >500 = clearly sustained physical instability.
   if [[ -n "$carrier_changes" ]] && [[ "$carrier_changes" =~ ^[0-9]+$ ]]; then
     if [[ "$carrier_changes" -gt 500 ]]; then
       findings+=("CAUSE"$'\t'"Severe carrier instability"$'\t'"${carrier_changes} link state transitions since boot (cumulative). A healthy, stable link has 1–5 total changes across its entire lifetime (initial autoneg + planned reboots). 500+ transitions indicates sustained physical instability: faulty cable, degraded SFP, switch port fault, or NIC hardware failure."$'\t'"Replace cable or SFP; try a different switch port; run: ethtool -d ${iface}")
@@ -338,9 +340,11 @@ run_wizard() {
     findings+=("WARN"$'\t'"TX errors (node_exporter)"$'\t'"${ne_tx_err} TX errors seen — possible congestion or hardware fault"$'\t'"Check switch port; run: ethtool -S ${iface} | grep -i error")
   fi
 
-  # TX drops — rate-based when packet totals available (>1% = CAUSE, >0.1% = WARN per
-  # Prometheus community standard and TCP performance research showing >0.1% loss degrades
-  # throughput). Falls back to absolute counts only when NE packet data is unavailable.
+  # TX drops — rate-based when packet totals available (>1% = CAUSE, >0.1% = WARN).
+  # >0.1% loss measurably degrades TCP throughput per Padhye et al., "Modeling TCP
+  # Throughput: A Simple Model and its Empirical Validation" (SIGCOMM 1998).
+  # Falls back to absolute counts (>5000 CAUSE, >100 WARN) only when NE packet
+  # data is unavailable — these are conservative safety nets, not rate-derived.
   local _tx_drop_cause=0
   if [[ -n "$ne_tx_drop" ]] && [[ "$ne_tx_drop" =~ ^[0-9]+$ ]] && [[ "$ne_tx_drop" -gt 0 ]]; then
     local _tx_drop_fired=0
@@ -498,9 +502,11 @@ run_wizard() {
     | grep -oP '[0-9]+' | head -1 || true)
   tx_pause=$(echo "$ethtool_s_out" | grep -i "tx_pause" \
     | grep -oP '[0-9]+' | head -1 || true)
+  # Pause frame threshold: cumulative count since boot (ethtool -S only provides totals).
+  # For more meaningful analysis, compare ethtool -S snapshots over time to get a per-second rate.
   if [[ -n "$rx_pause" && "$rx_pause" =~ ^[0-9]+$ && "$rx_pause" -gt 1000 ]] || \
      [[ -n "$tx_pause" && "$tx_pause" =~ ^[0-9]+$ && "$tx_pause" -gt 1000 ]]; then
-    findings+=("WARN"$'\t'"Excessive pause frames"$'\t'"rx_pause=${rx_pause:-0}, tx_pause=${tx_pause:-0}. High pause frame counts indicate flow control congestion between this NIC and the switch. Sustained pause frames can trigger carrier drops on some NICs."$'\t'"Review flow control: ethtool -a ${iface}; disable if not needed: ethtool -A ${iface} rx off tx off")
+    findings+=("WARN"$'\t'"Excessive pause frames"$'\t'"rx_pause=${rx_pause:-0}, tx_pause=${tx_pause:-0} (cumulative since boot). High pause frame counts indicate flow control congestion between this NIC and the switch. Sustained pause frames can trigger carrier drops on some NICs."$'\t'"Review flow control: ethtool -a ${iface}; disable if not needed: ethtool -A ${iface} rx off tx off")
   fi
 
   # Duplex mismatch (local full, peer half)
@@ -567,7 +573,8 @@ run_wizard() {
       [[ $interval -lt $min_interval ]] && min_interval=$interval
     done
     spread=$(( max_interval - min_interval ))
-    # Spread < 30 s across all inter-event gaps means events are evenly spaced.
+    # Spread < 30s across all inter-event gaps means events are evenly spaced.
+    # 30s captures LACP fast (3s), STP hello (2s), and short power-management timers.
     # Even spacing suggests a timer-driven cause: STP hello/TCN, LACP PDU, or power-management cycle.
     if [[ $spread -lt 30 ]]; then
       findings+=("WARN"$'\t'"Regular flap interval detected"$'\t'"Inter-event intervals are consistent (spread ${spread}s) — may indicate STP, LACP, or power-cycle timer"$'\t'"Check STP: bridge link; check LACP: teamdctl; check power management")
