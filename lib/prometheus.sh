@@ -4,6 +4,7 @@
 
 _PROM_REACHED=0
 _PROM_REACHABLE=0   # 1 once any curl to Prometheus succeeds (even with no data)
+_PROM_QUERY_FAILURES=0  # incremented on curl failure; checked by main script
 
 prom_query() {
   # Query Prometheus instant API; return first result value or empty string.
@@ -15,7 +16,7 @@ prom_query() {
   else
     response=$(curl -sf -G "${PROM_URL}/api/v1/query" \
       --data-urlencode "query=$query" \
-      --max-time 5 2>/dev/null) || return 0
+      --max-time 5 2>/dev/null) || { (( _PROM_QUERY_FAILURES++ )) || true; return 0; }
   fi
   if command -v jq &>/dev/null; then
     echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null
@@ -41,7 +42,7 @@ prom_query_at() {
     response=$(curl -sf -G "${PROM_URL}/api/v1/query" \
       --data-urlencode "query=$query" \
       --data-urlencode "time=$epoch" \
-      --max-time 5 2>/dev/null) || return 0
+      --max-time 5 2>/dev/null) || { (( _PROM_QUERY_FAILURES++ )) || true; return 0; }
   fi
   if command -v jq &>/dev/null; then
     echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null

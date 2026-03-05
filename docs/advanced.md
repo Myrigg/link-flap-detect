@@ -136,6 +136,31 @@ Webhooks fire **on state changes only** — not on every poll cycle. A `FLAPPING
 sent when an interface starts flapping, and a `CLEARED` payload when it stabilises. The URL
 is saved to `~/.config/link-flap/config` for future runs.
 
+### Webhook payload format
+
+**Slack** (any URL not containing `discord.com`):
+
+```json
+{"text":"[FLAPPING] eth0 — 8 transitions detected"}
+```
+
+```json
+{"text":"[CLEARED] eth0 — link has stabilised"}
+```
+
+**Discord** (URL containing `discord.com`):
+
+```json
+{"content":"[FLAPPING] eth0 — 8 transitions detected","username":"link-flap-detect"}
+```
+
+```json
+{"content":"[CLEARED] eth0 — link has stabilised","username":"link-flap-detect"}
+```
+
+Discord webhooks are auto-detected by checking whether the URL contains `discord.com`. No
+configuration flag is needed.
+
 ## Alert deduplication in follow mode
 
 When using `-f`, flap tracks per-interface state across rescan cycles:

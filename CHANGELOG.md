@@ -1,5 +1,45 @@
 # Changelog
 
+## [2026.03.05] — 2026-03-05
+
+### New features
+
+- **Per-interface threshold override (`-t eth0:10,eth1:5`)** — set different
+  flap thresholds for individual interfaces alongside the global default.
+  Validated >= 2 per interface; summary line notes when overrides are active.
+
+- **Dry-run mode for `--fix`** — `--fix-dry-run` (or `--fix --dry-run`) previews
+  which fixes would be applied without executing them. Shows `[DRY RUN]` labels
+  instead of `[APPLIED]`.
+
+- **Recurring-issue detection** — when a flapping interface has >= 3 past
+  FLAPPING entries in the persistent event log, a `[RECURRING]` label is shown
+  with the count. JSON output includes a `"recurring": true/false` field per
+  interface.
+
+- **RHEL/CentOS syslog support** — `/var/log/messages` added to the syslog
+  fallback loop alongside `/var/log/syslog` and `/var/log/kern.log`.
+
+### Robustness
+
+- **Prometheus query failure warning** — timed-out Prometheus queries are counted
+  and a warning is emitted when enrichment data may be incomplete.
+
+### Documentation
+
+- `python3` added to README requirements table (used by `-j` and Prometheus
+  `jq` fallback).
+- Webhook payload format examples added to `docs/advanced.md`.
+- `-m` vs `--fleet` comparison table added to `docs/enrichment.md`.
+- `-m` help text updated to note interactive prompt behaviour.
+- Heuristic documentation added to `lib/log-collection.sh`.
+- Per-interface grep rationale documented in `flap`.
+
+### Tests
+
+- 12 new tests: per-interface thresholds (5), dry-run (3), recurring detection
+  (3), Prometheus query failure warning (1). Total: ~219 tests.
+
 ## [2026.03.04.5] — 2026-03-04
 
 ### Bug fixes — 6 confirmed bugs squashed

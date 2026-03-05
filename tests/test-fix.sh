@@ -151,3 +151,40 @@ else
          "exit=$EXITCODE2\n$OUT2"
   fi
 fi
+
+# ── 305: --fix-dry-run shows [DRY RUN], no [APPLIED] ────────────────────────
+_fix_log_dry="$TESTDIR/fix-dry.log"
+rm -f "$_fix_log_dry"
+OUT=''; EXITCODE=0
+OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+      _LINK_FLAP_TEST_WIZARD_DIR="$_wiz_fix" \
+      _LINK_FLAP_TEST_FIX_LOG="$_fix_log_dry" \
+      bash "$SCRIPT" -d eth0 --fix-dry-run 2>&1) || EXITCODE=$?
+if echo "$OUT" | grep -q "DRY RUN" \
+   && ! echo "$OUT" | grep -q "APPLIED"; then
+  pass "305: --fix-dry-run shows [DRY RUN], no [APPLIED]"
+else
+  fail "305: --fix-dry-run shows [DRY RUN], no [APPLIED]" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 306: --fix --dry-run (separate flags) works the same ────────────────────
+OUT=''; EXITCODE=0
+OUT=$(BACKUP_DIR="$TESTDIR/backups" REPORT_DIR="$TESTDIR/reports" \
+      _LINK_FLAP_TEST_WIZARD_DIR="$_wiz_fix" \
+      _LINK_FLAP_TEST_FIX_LOG="$_fix_log_dry" \
+      bash "$SCRIPT" -d eth0 --fix --dry-run 2>&1) || EXITCODE=$?
+if echo "$OUT" | grep -q "DRY RUN" \
+   && ! echo "$OUT" | grep -q "APPLIED"; then
+  pass "306: --fix --dry-run (separate flags) shows [DRY RUN]"
+else
+  fail "306: --fix --dry-run (separate flags) shows [DRY RUN]" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 307: --fix-dry-run exit code remains 0 ──────────────────────────────────
+if [[ $EXITCODE -eq 0 ]]; then
+  pass "307: --fix-dry-run exit code is 0"
+else
+  fail "307: --fix-dry-run exit code is 0" "exit=$EXITCODE"
+fi

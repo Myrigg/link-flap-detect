@@ -544,3 +544,54 @@ if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error\|unknown option"; then
 else
   fail "220: invalid -w -1 → exit 2 + error message" "exit=$EXITCODE\n$OUT"
 fi
+
+# ── Per-interface threshold tests ─────────────────────────────────────────────
+
+# 300. Per-interface threshold triggers flapping: eth0 has 4 transitions, threshold eth0:3 → flapping
+t=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$t" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+run "$t" -w 60 -t eth0:3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "300: per-interface threshold eth0:3 with 4 transitions → flapping"
+else
+  fail "300: per-interface threshold eth0:3 with 4 transitions → flapping" "exit=$EXITCODE\n$OUT"
+fi
+
+# 301. Per-interface threshold suppresses flapping: eth0 has 4 transitions, threshold eth0:10 → no flapping
+run "$t" -w 60 -t eth0:10
+if [[ $EXITCODE -eq 0 ]] && ! echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "301: per-interface threshold eth0:10 suppresses 4 transitions"
+else
+  fail "301: per-interface threshold eth0:10 suppresses 4 transitions" "exit=$EXITCODE\n$OUT"
+fi
+
+# 302. Mixed global + per-interface: global=10 (too high for eth0), eth0:3 overrides → flapping
+run "$t" -w 60 -t 10 -t eth0:3
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[FLAPPING\]"; then
+  pass "302: mixed global=10 + per-interface eth0:3 → eth0 flaps (override wins)"
+else
+  fail "302: mixed global=10 + per-interface eth0:3 → eth0 flaps (override wins)" "exit=$EXITCODE\n$OUT"
+fi
+
+# 303. Per-interface threshold validation: < 2 is rejected
+t2=$(mktemp "$TESTDIR/XXXXXX.log"); : > "$t2"
+run "$t2" -t eth0:1
+if [[ $EXITCODE -eq 2 ]] && echo "$OUT" | grep -qi "error"; then
+  pass "303: per-interface threshold < 2 (eth0:1) → exit 2 + error"
+else
+  fail "303: per-interface threshold < 2 (eth0:1) → exit 2 + error" "exit=$EXITCODE\n$OUT"
+fi
+
+# 304. Summary line notes per-interface thresholds when active
+run "$t" -w 60 -t eth0:3
+if echo "$OUT" | grep -qi "per-interface"; then
+  pass "304: summary notes per-interface thresholds when active"
+else
+  fail "304: summary notes per-interface thresholds when active" "exit=$EXITCODE\n$OUT"
+fi

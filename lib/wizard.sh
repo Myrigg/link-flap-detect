@@ -716,7 +716,11 @@ run_wizard() {
       [[ "$f_fix" =~ ^(Check|Review|Investigate|See|Replace|Try) ]] && continue
 
       _rpt ""
-      if [[ -t 0 ]] && [[ -z "${_LINK_FLAP_TEST_FIX_LOG:-}" ]]; then
+      if [[ "${FIX_DRY_RUN:-0}" -eq 1 ]]; then
+        # Dry-run: show what would be applied, skip execution
+        _rpt "  ${CYAN}[DRY RUN]${RESET} Would apply: ${f_fix}"
+        (( _fix_skipped++ )) || true
+      elif [[ -t 0 ]] && [[ -z "${_LINK_FLAP_TEST_FIX_LOG:-}" ]]; then
         # Interactive: prompt
         _rpt "  ${GREEN}[FIX ${idx}]${RESET} ${f_fix}"
         read -rp "  Apply this fix now? [y/N] " _fix_answer < /dev/tty
@@ -743,7 +747,11 @@ run_wizard() {
     done
     if [[ $(( _fix_applied + _fix_failed + _fix_skipped )) -gt 0 ]]; then
       _rpt ""
-      _rpt "  Fixes: ${_fix_applied} applied, ${_fix_failed} failed, ${_fix_skipped} skipped"
+      if [[ "${FIX_DRY_RUN:-0}" -eq 1 ]]; then
+        _rpt "  Fixes (dry-run): ${_fix_skipped} would be applied"
+      else
+        _rpt "  Fixes: ${_fix_applied} applied, ${_fix_failed} failed, ${_fix_skipped} skipped"
+      fi
     fi
   fi
 
