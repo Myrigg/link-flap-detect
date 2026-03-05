@@ -201,6 +201,8 @@ run_wizard() {
   # iperf3 active probe — uses _IPERF3_RESULT_CACHE (run_iperf3 called at Step 3 entry)
   local iperf3_bps iperf3_retransmits
   iperf3_bps=$(_iperf3_val "end.sum_sent.bits_per_second")
+  # UDP fallback: sum_sent may be empty; use end.sum instead
+  [[ -z "$iperf3_bps" ]] && iperf3_bps=$(_iperf3_val "end.sum.bits_per_second")
   iperf3_retransmits=$(_iperf3_val "end.sum_sent.retransmits")
 
   local speed duplex autoneg
@@ -222,7 +224,7 @@ run_wizard() {
   local_mtu=$(_wiz_read "/sys/class/net/${iface}/mtu")
   if [[ -n "$local_mtu" && "$local_mtu" =~ ^[0-9]+$ ]]; then
     local _lldp_mtu_raw
-    _lldp_mtu_raw=$(_wiz_cmd lldpctl lldpctl "$iface")
+    _lldp_mtu_raw=$(_wiz_cmd lldpctl timeout 5 lldpctl "$iface")
     peer_mtu=$(echo "$_lldp_mtu_raw" | grep -i "Maximum Frame Size:" \
       | grep -oP '[0-9]+' | head -1 || true)
   fi
@@ -246,7 +248,7 @@ run_wizard() {
   if command -v lldpctl &>/dev/null; then
     _lldp_available=1
     local lldp_raw
-    lldp_raw=$(_wiz_cmd lldpctl lldpctl "$iface")
+    lldp_raw=$(_wiz_cmd lldpctl timeout 5 lldpctl "$iface")
     lldp_peer_name=$(echo "$lldp_raw" | awk -F'SysName:' 'NF>1{gsub(/^[ \t]+/,"",$2); print $2; exit}')
     lldp_peer_port=$(echo "$lldp_raw" | awk -F'PortDescr:' 'NF>1{gsub(/^[ \t]+/,"",$2); print $2; exit}')
   fi
@@ -424,7 +426,15 @@ run_wizard() {
   # iperf3: TCP retransmits > 0
   if [[ -n "$iperf3_retransmits" ]] && [[ "$iperf3_retransmits" =~ ^[0-9]+$ ]] && \
      [[ "$iperf3_retransmits" -gt 0 ]]; then
-    findings+=("WARN"$'\t'"TCP retransmits during iperf3 test"$'\t'"${iperf3_retransmits} retransmits in 5s test to ${IPERF3_SERVER} — congestion or packet loss"$'\t'"Test longer: iperf3 -c ${IPERF3_SERVER} -t 30; check switch port buffers")
+    findings+=("WARN"$'\t'"TCP retransmits during iperf3 test"$'\t'"${iperf3_retransmits} retransmits in ${IPERF3_DURATION:-5}s test to ${IPERF3_SERVER} — congestion or packet loss"$'\t'"Test longer: iperf3 -c ${IPERF3_SERVER} -t 30; check switch port buffers")
+  fi
+
+  # iperf3: UDP packet loss > 0
+  local iperf3_lost_packets
+  iperf3_lost_packets=$(_iperf3_val "end.sum.lost_packets")
+  if [[ -n "$iperf3_lost_packets" ]] && [[ "$iperf3_lost_packets" =~ ^[0-9]+$ ]] && \
+     [[ "$iperf3_lost_packets" -gt 0 ]]; then
+    findings+=("WARN"$'\t'"UDP packet loss during iperf3 test"$'\t'"${iperf3_lost_packets} packets lost in ${IPERF3_DURATION:-5}s UDP test to ${IPERF3_SERVER}"$'\t'"Check for congestion, QoS policies, or interface buffer overruns")
   fi
 
   # Known driver advisories (sourced from official vendor/kernel documentation)
@@ -652,6 +662,13 @@ run_wizard() {
     fi
     _rpt "  bandwidth      : ${mbps_str} Mbps"
     if [[ -n "$iperf3_retransmits" ]]; then _rpt "  retransmits    : ${iperf3_retransmits}"; fi
+    local _wiz_jitter _wiz_lost
+    _wiz_jitter=$(_iperf3_val "end.sum.jitter_ms")
+    _wiz_lost=$(_iperf3_val "end.sum.lost_packets")
+    if [[ -n "$_wiz_jitter" ]]; then _rpt "  jitter         : ${_wiz_jitter} ms"; fi
+    if [[ -n "$_wiz_lost" ]] && [[ "$_wiz_lost" =~ ^[0-9]+$ ]] && [[ "$_wiz_lost" -gt 0 ]]; then
+      _rpt "  lost packets   : ${_wiz_lost}"
+    fi
   fi
   _rpt ""
   _rpt "${BOLD}Findings${RESET}"
