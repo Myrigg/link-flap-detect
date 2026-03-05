@@ -14,8 +14,19 @@ run_iperf3() {
   else
     local bind_args=()
     [[ -n "$local_ip" ]] && bind_args=(-B "$local_ip")
-    _IPERF3_RESULT_CACHE=$(iperf3 -c "$IPERF3_SERVER" "${bind_args[@]}" -t 5 --json \
-                           2>/dev/null || true)
+    local _outer_timeout=$(( ${IPERF3_DURATION:-5} + 10 ))
+    local _proto_args=()
+    [[ "${IPERF3_PROTOCOL:-}" == "udp" ]] && _proto_args+=(-u)
+    local _bitrate_args=()
+    [[ -n "${IPERF3_BITRATE:-}" ]] && _bitrate_args+=(-b "$IPERF3_BITRATE")
+    _IPERF3_RESULT_CACHE=$(timeout "$_outer_timeout" iperf3 -c "$IPERF3_SERVER" \
+                           "${bind_args[@]}" \
+                           --connect-timeout 5000 \
+                           -p "${IPERF3_PORT:-5201}" \
+                           -t "${IPERF3_DURATION:-5}" \
+                           "${_proto_args[@]+"${_proto_args[@]}"}" \
+                           "${_bitrate_args[@]+"${_bitrate_args[@]}"}" \
+                           --json 2>/dev/null || true)
   fi
   _IPERF3_BIND_IP="$local_ip"
   [[ -n "$_IPERF3_RESULT_CACHE" ]]
@@ -46,12 +57,25 @@ show_iperf3_context() {
   bps=$(_iperf3_val "end.sum_sent.bits_per_second")
   retransmits=$(_iperf3_val "end.sum_sent.retransmits")
 
-  [[ -z "$bps" && -z "$retransmits" ]] && return
+  # UDP fallback: sum_sent may be empty; use end.sum instead
+  if [[ -z "$bps" ]]; then
+    bps=$(_iperf3_val "end.sum.bits_per_second")
+  fi
 
+  local jitter_ms lost_packets
+  jitter_ms=$(_iperf3_val "end.sum.jitter_ms")
+  lost_packets=$(_iperf3_val "end.sum.lost_packets")
+
+  [[ -z "$bps" && -z "$retransmits" && -z "$jitter_ms" ]] && return
+
+  # Header with non-default port/protocol
+  local _hdr_extra=""
+  [[ "${IPERF3_PORT:-5201}" != "5201" ]] && _hdr_extra+=":${IPERF3_PORT}"
+  [[ "${IPERF3_PROTOCOL:-}" == "udp" ]] && _hdr_extra+=" UDP"
   if [[ -n "$_IPERF3_BIND_IP" ]]; then
-    echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}  (via ${iface} ${_IPERF3_BIND_IP})"
+    echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}${_hdr_extra}  (via ${iface} ${_IPERF3_BIND_IP})"
   else
-    echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}"
+    echo -e "  ${CYAN}[iperf3]${RESET}  → ${IPERF3_SERVER}${_hdr_extra}"
   fi
   if [[ -n "$bps" ]]; then
     local mbps
@@ -64,5 +88,11 @@ show_iperf3_context() {
     else
       echo    "    Retransmits     : ${retransmits}"
     fi
+  fi
+  if [[ -n "$jitter_ms" ]]; then
+    printf "    Jitter          : %s ms\n" "$jitter_ms"
+  fi
+  if [[ -n "$lost_packets" ]] && [[ "$lost_packets" =~ ^[0-9]+$ ]] && [[ "$lost_packets" -gt 0 ]]; then
+    echo -e "    Lost packets    : ${YELLOW}${lost_packets}${RESET}"
   fi
 }

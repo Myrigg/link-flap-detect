@@ -95,6 +95,11 @@ No package manager required. Runs on any Ubuntu 20.04+ system out of the box.
 | `-m URL` | Prometheus base URL (saved to config) | (none) |
 | `-n URL` | node_exporter URL (`off` to disable) | `localhost:9100` |
 | `-b SERVER` | iperf3 server for bandwidth test (saved to config) | (none) |
+| `--iperf3-port PORT` | iperf3 port (saved to config) | `5201` |
+| `--iperf3-duration SECS` | iperf3 test duration in seconds (saved to config) | `5` |
+| `--iperf3-udp` | Use UDP protocol for iperf3 (saved to config) | TCP |
+| `--iperf3-bitrate RATE` | iperf3 bandwidth limit, e.g. `100M` (saved to config) | (none) |
+| `--iperf3-server` | Start as iperf3 server (foreground, Ctrl-C to stop) | |
 | **Wizard** | | |
 | `-d IFACE` | Run [diagnostic wizard](docs/wizard.md) for IFACE | (none) |
 | `--dut IFACE` | [Device-under-test](docs/wizard.md#device-under-test---dut-iface) comparison | (none) |

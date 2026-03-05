@@ -64,6 +64,8 @@ source "$TESTS_DIR/test-wizard.sh"
 source "$TESTS_DIR/test-node-exporter.sh"
 # shellcheck source=tests/test-iperf3.sh
 source "$TESTS_DIR/test-iperf3.sh"
+# shellcheck source=tests/test-iperf3-settings.sh
+source "$TESTS_DIR/test-iperf3-settings.sh"
 # shellcheck source=tests/test-correlation.sh
 source "$TESTS_DIR/test-correlation.sh"
 # shellcheck source=tests/test-live-system.sh

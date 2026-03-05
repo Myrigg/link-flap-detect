@@ -58,6 +58,22 @@ _load_config() {
     local _cfg_ne; _cfg_ne=$(_config_get "NODE_EXPORTER_URL")
     [[ -n "$_cfg_ne" ]] && NODE_EXPORTER_URL="$_cfg_ne"
   }
+  [[ "${_IPERF3_PORT_FROM_FLAG:-0}" -eq 0 && "$IPERF3_PORT" == "5201" ]] && {
+    local _cfg_ip; _cfg_ip=$(_config_get "IPERF3_PORT")
+    [[ -n "$_cfg_ip" ]] && IPERF3_PORT="$_cfg_ip"
+  }
+  [[ "${_IPERF3_DURATION_FROM_FLAG:-0}" -eq 0 && "$IPERF3_DURATION" == "5" ]] && {
+    local _cfg_id; _cfg_id=$(_config_get "IPERF3_DURATION")
+    [[ -n "$_cfg_id" ]] && IPERF3_DURATION="$_cfg_id"
+  }
+  [[ "${_IPERF3_PROTOCOL_FROM_FLAG:-0}" -eq 0 && -z "$IPERF3_PROTOCOL" ]] && {
+    local _cfg_ipr; _cfg_ipr=$(_config_get "IPERF3_PROTOCOL")
+    [[ -n "$_cfg_ipr" ]] && IPERF3_PROTOCOL="$_cfg_ipr"
+  }
+  [[ "${_IPERF3_BITRATE_FROM_FLAG:-0}" -eq 0 && -z "$IPERF3_BITRATE" ]] && {
+    local _cfg_ib; _cfg_ib=$(_config_get "IPERF3_BITRATE")
+    [[ -n "$_cfg_ib" ]] && IPERF3_BITRATE="$_cfg_ib"
+  }
   return 0  # prevent set -e exit when last && condition is false
 }
 
