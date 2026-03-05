@@ -143,6 +143,59 @@ else
        "exit=$EXITCODE\n$OUT"
 fi
 
+# ── 308: Recurring detection — 3+ past entries → [RECURRING] label ────────────
+_recur_evlog="$TESTDIR/test-recurring-events.log"
+cat > "$_recur_evlog" <<'EOF'
+2026-01-01T10:00:00+0000	eth0	FLAPPING	transitions=5
+2026-01-15T10:00:00+0000	eth0	FLAPPING	transitions=3
+2026-02-01T10:00:00+0000	eth0	FLAPPING	transitions=8
+EOF
+_recur_input=$(mktemp "$TESTDIR/XXXXXX.log")
+cat > "$_recur_input" <<EOF
+$(ts 500) host kernel: eth0: NIC Link is Down
+$(ts 400) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 300) host kernel: eth0: NIC Link is Down
+$(ts 200) host kernel: eth0: NIC Link is Up 1000 Mbps Full Duplex
+$(ts 100) host kernel: eth0: NIC Link is Down
+EOF
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_INPUT="$_recur_input" EVENT_LOG="$_recur_evlog" \
+      bash "$SCRIPT" -w 60 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] && echo "$OUT" | grep -q "\[RECURRING\]" \
+   && echo "$OUT" | grep -q "3 previous"; then
+  pass "308: recurring detection — 3 past entries → [RECURRING] with count"
+else
+  fail "308: recurring detection — 3 past entries → [RECURRING] with count" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 309: Non-recurring — 1 past entry → no [RECURRING] label ────────────────
+_nonrecur_evlog="$TESTDIR/test-nonrecur-events.log"
+cat > "$_nonrecur_evlog" <<'EOF'
+2026-02-01T10:00:00+0000	eth0	FLAPPING	transitions=3
+EOF
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_INPUT="$_recur_input" EVENT_LOG="$_nonrecur_evlog" \
+      bash "$SCRIPT" -w 60 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] && ! echo "$OUT" | grep -q "\[RECURRING\]"; then
+  pass "309: non-recurring — 1 past entry → no [RECURRING] label"
+else
+  fail "309: non-recurring — 1 past entry → no [RECURRING] label" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
+# ── 310: No event log file → no error, no [RECURRING] label ─────────────────
+OUT=''; EXITCODE=0
+OUT=$(_LINK_FLAP_TEST_INPUT="$_recur_input" EVENT_LOG="$TESTDIR/no-such-events.log" \
+      bash "$SCRIPT" -w 60 2>&1) || EXITCODE=$?
+if [[ $EXITCODE -eq 1 ]] && ! echo "$OUT" | grep -q "\[RECURRING\]" \
+   && ! echo "$OUT" | grep -qi "error.*event"; then
+  pass "310: no event log file → no error, no [RECURRING]"
+else
+  fail "310: no event log file → no error, no [RECURRING]" \
+       "exit=$EXITCODE\n$OUT"
+fi
+
 # ── 258: Event log rotation — 10,001 lines trimmed to 10,000 ─────────────────
 _rot_log="$TESTDIR/test-rotation-events.log"
 # Create a log with 10,001 lines (pre-existing)

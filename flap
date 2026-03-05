@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # flap
 # Detect network interface link flapping by parsing system logs.
-# Supports: journald (primary), /var/log/syslog, /var/log/kern.log
+# Supports: journald (primary), /var/log/syslog, /var/log/kern.log, /var/log/messages
 # Covers:   kernel NIC drivers (virtio_net, e1000e, igb, tg3, ixgbe, bnxt, ...),
 #           systemd-networkd, NetworkManager
 # Platform: Ubuntu 24.04 (systemd), also works on 20.04 / 22.04
@@ -12,9 +12,11 @@
 # Options:
 #   -w MINUTES    Time window to scan back from now (default: 60)
 #   -t COUNT      Number of transitions to consider flapping (default: 3)
+#                 Per-interface: -t eth0:10,eth1:5 (overrides global for named interfaces)
 #   -i IFACE      Limit output to a specific interface (e.g. eth0, ens18)
 #   -p PCAP_FILE  Analyse a packet capture file with tshark (requires tshark)
-#   -m URL        Prometheus base URL (saved for future runs in ~/.config/link-flap/config)
+#   -m URL        Prometheus base URL (prompts interactively on first TTY run if unset;
+#                 saved for future runs in ~/.config/link-flap/config)
 #   -n URL        node_exporter metrics URL (default: http://localhost:9100; 'off' to disable)
 #   -b SERVER     iperf3 server for 5s bandwidth+retransmit test (saved for future runs)
 #   -d IFACE      Run diagnostic wizard for IFACE — full report of likely causes and fixes
@@ -26,6 +28,8 @@
 #   -v            Verbose — show every individual up/down event
 #   -h            Show this help
 #   --fix         Auto-apply safe single-command fixes from wizard findings (prompts in TTY)
+#   --fix-dry-run Preview fixes without applying (sets --fix + --dry-run)
+#   --dry-run     When combined with --fix, show what would be applied without executing
 #   -H HOST       Run on a remote machine over SSH (e.g. -H user@192.168.1.1)
 #   --export FILE Write Prometheus textfile metrics to FILE (for node_exporter textfile collector)
 #   --reports     List and summarise saved wizard reports
@@ -75,7 +79,7 @@ if [[ -n "$_LIB_DIR" ]]; then
 fi
 unset _LIB_DIR
 
-VERSION="2026.03.04.5"
+VERSION="2026.03.05"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 WINDOW_MINUTES=${WINDOW_MINUTES:-60}
@@ -108,9 +112,13 @@ LOG_FILE=""                  # --log-file: append output to file
 QUIET_MODE=0                 # --quiet: suppress all stdout
 # shellcheck disable=SC2034  # FIX_MODE is read in lib/wizard.sh
 FIX_MODE=0                   # --fix: auto-apply wizard fixes
+FIX_DRY_RUN=0               # --fix-dry-run / --dry-run: preview fixes without applying
 _SHOW_REPORTS=0              # --reports: list saved reports
 REMOTE_HOST=""               # -H: run on remote machine via SSH
 EXPORT_FILE=""               # --export: write Prometheus metrics to file
+
+# ── Per-interface threshold overrides ────────────────────────────────────────
+declare -A IFACE_THRESHOLDS=()       # e.g. IFACE_THRESHOLDS[eth0]=10
 
 # ── JSON output accumulators ─────────────────────────────────────────────────
 # Populated throughout the script when JSON_MODE=1; serialised at exit.
@@ -154,6 +162,12 @@ while [[ $# -gt 0 ]]; do
     --fix)
       # shellcheck disable=SC2034  # FIX_MODE is read in lib/wizard.sh
       FIX_MODE=1 ;;
+    --fix-dry-run)
+      # shellcheck disable=SC2034  # FIX_MODE/FIX_DRY_RUN read in lib/wizard.sh
+      FIX_MODE=1; FIX_DRY_RUN=1 ;;
+    --dry-run)
+      # shellcheck disable=SC2034  # FIX_DRY_RUN read in lib/wizard.sh
+      FIX_DRY_RUN=1 ;;
     --export)   EXPORT_FILE="${2:-}"; shift ;;
     --reports)  _SHOW_REPORTS=1 ;;
     --log-file) LOG_FILE="${2:-}"; shift ;;
@@ -168,7 +182,21 @@ set -- "${_REBUILT_ARGS[@]+"${_REBUILT_ARGS[@]}"}"
 while getopts ":w:t:i:p:m:n:b:d:r:f:W:H:jvh" opt; do
   case $opt in
     w) WINDOW_MINUTES="$OPTARG"; _WINDOW_MINUTES_FROM_FLAG=1 ;;
-    t) FLAP_THRESHOLD="$OPTARG"; _FLAP_THRESHOLD_FROM_FLAG=1 ;;
+    t) # Parse per-interface thresholds (e.g. "eth0:10,eth1:5") or global integer
+       if [[ "$OPTARG" == *:* ]]; then
+         IFS=',' read -ra _tpairs <<< "$OPTARG"
+         for _tp in "${_tpairs[@]}"; do
+           _tp_iface="${_tp%%:*}"
+           _tp_val="${_tp#*:}"
+           if ! [[ "$_tp_val" =~ ^[0-9]+$ ]] || [[ "$_tp_val" -lt 2 ]]; then
+             echo "Error: -t per-interface threshold for '${_tp_iface}' must be >= 2." >&2; exit 2
+           fi
+           IFACE_THRESHOLDS["$_tp_iface"]="$_tp_val"
+         done
+       else
+         FLAP_THRESHOLD="$OPTARG"
+       fi
+       _FLAP_THRESHOLD_FROM_FLAG=1 ;;
     i) IFACE_FILTER="$OPTARG"   ;;
     p) PCAP_FILE="$OPTARG"      ;;
     m) PROM_URL="$OPTARG";       _PROM_URL_FROM_FLAG=1     ;;
@@ -420,7 +448,7 @@ if [[ "$FLEET_MODE" -eq 0 ]]; then
     collect_from_journald | parse_events >> "$TMPFILE"
   else
     LOG_SOURCE="syslog files"
-    for f in /var/log/syslog /var/log/kern.log; do
+    for f in /var/log/syslog /var/log/kern.log /var/log/messages; do
       collect_from_syslog "$f" | parse_events >> "$TMPFILE"
     done
   fi
@@ -593,7 +621,9 @@ if [[ ${#IFACES[@]} -eq 0 ]]; then
 fi
 
 for iface in "${IFACES[@]}"; do
-  # Extract events for this interface, sorted by time
+  # Per-interface grep on TMPFILE: kept for clarity over a single-pass approach.
+  # TMPFILE is small (hundreds of lines max) and interface count is typically <10,
+  # so the O(n*m) cost is negligible versus the readability benefit.
   mapfile -t EVENTS < <(grep -F -- " $iface " "$TMPFILE" | sort -n)
 
   count=${#EVENTS[@]}
@@ -629,7 +659,8 @@ for iface in "${IFACES[@]}"; do
   # ── JSON: collect per-interface data ─────────────────────────────────────
   if [[ "$JSON_MODE" -eq 1 ]]; then
     _j_status="active"
-    [[ "$transitions" -ge "$FLAP_THRESHOLD" ]] && _j_status="flapping"
+    _iface_thresh="${IFACE_THRESHOLDS[$iface]:-$FLAP_THRESHOLD}"
+    [[ "$transitions" -ge "$_iface_thresh" ]] && _j_status="flapping"
     _j_events=""
     for evt in "${EVENTS[@]}"; do
       IFS=' ' read -r _je _ji _js <<< "$evt"
@@ -639,10 +670,17 @@ for iface in "${IFACES[@]}"; do
     done
     _j_first_iso=$(date -d "@$first_epoch" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null || echo "unknown")
     _j_last_iso=$(date -d "@$last_epoch" -u "+%Y-%m-%dT%H:%M:%S+0000" 2>/dev/null || echo "unknown")
-    _JSON_IFACES+=("{\"name\":\"${iface}\",\"status\":\"${_j_status}\",\"transitions\":${transitions},\"event_count\":${count},\"first_event\":\"${_j_first_iso}\",\"last_event\":\"${_j_last_iso}\",\"span_seconds\":${span},\"events\":[${_j_events}]}")
+    # Recurring check for JSON: count past FLAPPING entries in event log
+    _j_recurring="false"
+    if [[ -f "$EVENT_LOG" ]]; then
+      _j_past=$(awk -F'\t' -v iface="$iface" '$2 == iface && $3 == "FLAPPING" { c++ } END { print c+0 }' "$EVENT_LOG" 2>/dev/null || echo "0")
+      [[ "$_j_past" -ge 3 ]] && _j_recurring="true"
+    fi
+    _JSON_IFACES+=("{\"name\":\"${iface}\",\"status\":\"${_j_status}\",\"transitions\":${transitions},\"event_count\":${count},\"first_event\":\"${_j_first_iso}\",\"last_event\":\"${_j_last_iso}\",\"span_seconds\":${span},\"recurring\":${_j_recurring},\"events\":[${_j_events}]}")
   fi
 
-  if [[ "$transitions" -ge "$FLAP_THRESHOLD" ]]; then
+  _iface_thresh="${IFACE_THRESHOLDS[$iface]:-$FLAP_THRESHOLD}"
+  if [[ "$transitions" -ge "$_iface_thresh" ]]; then
     FLAPPING_FOUND=1
     (( FLAPPING_COUNT++ )) || true
     FLAPPING_IFACES+=("$iface")
@@ -697,6 +735,11 @@ if [[ -n "$PROM_URL" ]] && [[ "$_PROM_REACHED" -eq 0 ]]; then
   fi
   echo ""
 fi
+# Warn if Prometheus queries timed out (curl failures counted in lib/prometheus.sh)
+if [[ -n "$PROM_URL" ]] && [[ "${_PROM_QUERY_FAILURES:-0}" -gt 0 ]]; then
+  echo -e "${DIM}(${_PROM_QUERY_FAILURES} Prometheus query/queries timed out — enrichment data may be incomplete)${RESET}"
+  echo ""
+fi
 
 # ── Follow-mode: report cleared interfaces ───────────────────────────────────
 # In follow mode, any interface that was flapping last cycle but is NOT in the
@@ -735,12 +778,32 @@ if [[ "$FLAPPING_COUNT" -ge 2 ]]; then
   fi
 fi
 
+# ── Recurring-issue detection ──────────────────────────────────────────────────
+# For each flapping interface, check the persistent event log for past FLAPPING
+# entries. If >= 3 past occurrences, flag as [RECURRING].
+declare -A _RECURRING_IFACES=()
+if [[ -f "$EVENT_LOG" ]] && [[ ${#FLAPPING_IFACES[@]} -gt 0 ]]; then
+  for _ri in "${FLAPPING_IFACES[@]}"; do
+    _past_count=$(awk -F'\t' -v iface="$_ri" '$2 == iface && $3 == "FLAPPING" { c++ } END { print c+0 }' "$EVENT_LOG" 2>/dev/null || echo "0")
+    if [[ "$_past_count" -ge 3 ]]; then
+      _RECURRING_IFACES["$_ri"]="$_past_count"
+      echo -e "  ${YELLOW}${BOLD}[RECURRING]${RESET} ${BOLD}${_ri}${RESET} — ${_past_count} previous flapping events in event log"
+      echo -e "  ${DIM}Use --events to review history${RESET}"
+      echo ""
+    fi
+  done
+fi
+
 if [[ "$FLAPPING_FOUND" -eq 0 ]]; then
-  echo -e "${GREEN}No flapping detected${RESET} in the last ${WINDOW_MINUTES} minutes (threshold: ${FLAP_THRESHOLD} transitions)."
+  _thresh_note="threshold: ${FLAP_THRESHOLD} transitions"
+  [[ ${#IFACE_THRESHOLDS[@]} -gt 0 ]] && _thresh_note+=" + per-interface overrides"
+  echo -e "${GREEN}No flapping detected${RESET} in the last ${WINDOW_MINUTES} minutes (${_thresh_note})."
   echo ""
 else
   _plural="s"; [[ "$FLAPPING_COUNT" -eq 1 ]] && _plural=""
-  echo -e "${BOLD}Summary:${RESET} ${RED}${FLAPPING_COUNT} interface${_plural} flapping${RESET} in the last ${WINDOW_MINUTES} minutes."
+  _thresh_note=""
+  [[ ${#IFACE_THRESHOLDS[@]} -gt 0 ]] && _thresh_note=" (per-interface thresholds active)"
+  echo -e "${BOLD}Summary:${RESET} ${RED}${FLAPPING_COUNT} interface${_plural} flapping${RESET} in the last ${WINDOW_MINUTES} minutes.${_thresh_note}"
   echo ""
 fi
 

@@ -25,8 +25,10 @@ collect_from_syslog() {
       # Date range specified — read the whole file; the epoch filter handles trimming
       cat "$logfile"
     else
-      # Filter roughly by recency using the last N lines proportional to window
-      local lines=$(( WINDOW_MINUTES * 200 ))   # ~200 log lines per minute — generous
+      # Heuristic: ~200 log lines per minute is generous for most systems.
+      # On very busy servers this may miss old events; use --since/--until
+      # or journald (the default) for precise time-bounded queries.
+      local lines=$(( WINDOW_MINUTES * 200 ))
       tail -n "$lines" "$logfile"
     fi
   fi

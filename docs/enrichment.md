@@ -150,3 +150,16 @@ The diagnostic wizard raises findings based on these values:
     Memory available: 87.3%
     Load avg (1m)   : 0.42
 ```
+
+## When to use `-m` vs `--fleet`
+
+| | `-m URL` (default) | `-m URL --fleet` |
+|---|---|---|
+| **Data source** | Local logs (journald / syslog) | Prometheus only (no local logs) |
+| **Scope** | This machine only | Every host Prometheus scrapes |
+| **Use case** | Enrich local detection with Prometheus context | Scan an entire fleet remotely |
+| **Requires** | Local log access + optional Prometheus | Prometheus + node_exporter on all hosts |
+
+Use `-m` alone when diagnosing a specific machine — it combines local log parsing with
+Prometheus metric enrichment for the richest single-host view. Use `--fleet` when you need
+a quick sweep across many machines from a central monitoring host.
