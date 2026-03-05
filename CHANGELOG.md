@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026.03.05.1] — 2026-03-05
+
+### Documentation
+
+- **Inline citations for diagnostic thresholds** — added source references for
+  thresholds that lacked explicit justification: default flap threshold (Cisco IOS
+  comparison), correlation window (STP/LACP timer ranges), carrier_changes
+  (expected healthy range), drop rate (Padhye et al. SIGCOMM 1998), pause frames
+  (cumulative-since-boot caveat), and flap interval spread (LACP/STP timers).
+
+---
+
 ## [2026.03.05] — 2026-03-05
 
 ### New features
