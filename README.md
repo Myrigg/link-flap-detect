@@ -237,4 +237,4 @@ By default, virtual and container interfaces are silently ignored: `lo`, `veth*`
 bash tests/run-tests.sh
 ```
 
-No root access or external dependencies required. The test suite (22 files, 219 tests) injects synthetic log data and mocked tool output — none of the optional tools need to be installed. Individual test files can also be run in isolation: `bash tests/test-detection.sh`, etc.
+No root access or external dependencies required. The test suite (23 files, 230 tests) injects synthetic log data and mocked tool output — none of the optional tools need to be installed. Individual test files can also be run in isolation: `bash tests/test-detection.sh`, etc.

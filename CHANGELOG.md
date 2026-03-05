@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026.03.05.2] — 2026-03-05
+
+### Bug fixes
+
+- **Fix `./flap -d` freeze when iperf3 server is unreachable** — added
+  `--connect-timeout 5000` (5s) and an outer `timeout` safety net to the
+  iperf3 invocation. Previously, `iperf3 -c` could hang for ~127s on TCP SYN
+  retransmits when the auto-discovered LLDP/gateway host didn't run iperf3.
+- **Wrap `lldpctl` calls in `timeout 5`** — prevents LLDP daemon stalls from
+  blocking the wizard (3 call sites: flap main, wizard MTU check, wizard
+  neighbour identification).
+
+### New features
+
+- **Configurable iperf3 settings** — five new flags, all saved to config:
+  - `--iperf3-port PORT` — target port (default 5201)
+  - `--iperf3-duration SECS` — test duration (default 5)
+  - `--iperf3-udp` — use UDP protocol (default TCP)
+  - `--iperf3-bitrate RATE` — bandwidth limit (e.g. `100M`)
+  - `--iperf3-server` — start as iperf3 server (foreground, Ctrl-C to stop)
+- **Full UDP support** — display shows jitter (ms), lost packets; wizard raises
+  `[WARN]` for UDP packet loss > 0.
+- **Input validation** — port (1–65535), duration (1–3600), protocol
+  (empty/tcp/udp), bitrate (number with optional K/M/G suffix).
+
+### Tests
+
+- 11 new tests (261–271) covering config persistence/loading, validation,
+  server mode, UDP display, wizard findings, and flag-overrides-config.
+  Total: 230 tests.
+
+---
+
 ## [2026.03.05.1] — 2026-03-05
 
 ### Documentation
