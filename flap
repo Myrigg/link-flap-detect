@@ -462,9 +462,13 @@ fi
 TMPFILE=$(mktemp /tmp/link-flap-XXXXXX) || {
   echo "Error: failed to create temp file." >&2; exit 2
 }
-_SHUTTING_DOWN=0
-_graceful_shutdown() { _SHUTTING_DOWN=1; rm -f "$TMPFILE"; }
-trap '_graceful_shutdown' EXIT INT TERM HUP
+# _SHUTTING_DOWN, _graceful_shutdown, and trap are defined in lib/signals.sh.
+# If running without lib/ (standalone bundle), provide a minimal fallback.
+if [[ "$(type -t _graceful_shutdown)" != "function" ]]; then
+  _SHUTTING_DOWN=0
+  _graceful_shutdown() { _SHUTTING_DOWN=1; rm -f "$TMPFILE"; }
+  trap '_graceful_shutdown' EXIT INT TERM HUP
+fi
 
 if [[ -n "$ROLLBACK_ID" ]]; then do_rollback "$ROLLBACK_ID"; exit 0; fi
 

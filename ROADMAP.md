@@ -154,3 +154,45 @@ Designed for cron: `*/15 * * * * ./flap --export /var/lib/node_exporter/flap.pro
 `flap` split from ~2800 lines to ~850-line main + 10 modules under `lib/`.
 `make install` installs both; `make bundle` creates a standalone single-file build.
 All 161 tests pass without modification.
+
+---
+
+## Tier 5 — Resilience and reliability
+
+Patterns ported from S2DevTools to harden fleet operations, webhook delivery, and
+continuous monitoring. Each addition is a standalone lib/ module with full test coverage.
+
+### 5.1 — Graceful shutdown (signal handling)
+Add `lib/signals.sh`. Trap `SIGINT`, `SIGTERM`, and `EXIT` to clean up temp files,
+flush pending webhook deliveries, and write final event log entries before exit.
+Follow mode (`-f`) currently leaves no cleanup path on Ctrl-C. The `_SHUTTING_DOWN`
+variable already exists but has no signal trap wiring.
+
+### 5.2 — Retry with exponential backoff
+Add `lib/retry.sh`. Generic `_retry_backoff` function: attempts a command up to N times
+with exponential delay (base × factor^attempt), jitter (±30%), and a max delay cap.
+Used by webhook delivery and Prometheus queries to survive transient failures.
+
+### 5.3 — Circuit breaker
+Add `lib/circuit-breaker.sh`. Three-state circuit (CLOSED → OPEN → HALF-OPEN) backed by
+a state file in `$_CONFIG_DIR`. Tracks failure count within a rolling window. Opens the
+circuit after N consecutive failures (skips calls entirely). After a reset timeout, allows
+one probe request (HALF-OPEN). Success closes; failure reopens. Applied to Prometheus
+queries and webhook POST calls.
+
+### 5.4 — Token bucket rate limiter
+Add `lib/rate-limiter.sh`. Token bucket algorithm for webhook throttling: configurable
+capacity and refill rate. Prevents notification flooding during severe flapping storms
+(e.g. 50 interfaces flapping simultaneously). Default: 5 webhooks/minute with burst of 10.
+
+### 5.5 — State machine for interface lifecycle
+Add `lib/state-machine.sh`. Formal state model for each interface: `STABLE → FLAPPING →
+STILL_FLAPPING → CLEARED → STABLE`. Replaces ad-hoc env-var state tracking in follow mode.
+State persisted to `$_CONFIG_DIR/interface-state.json` so follow-mode state survives
+shell restarts. Guards prevent invalid transitions (e.g. CLEARED → STILL_FLAPPING).
+
+### 5.6 — Time window counter (configurable correlation)
+Add `lib/time-window.sh`. Sliding window counter that replaces the hardcoded 10-second
+correlation bucket. Adds `--correlation-window SECONDS` flag (default: 10). Uses binary
+search on sorted epoch arrays for efficient counting. Applied to cross-interface
+correlation logic in the main script.
