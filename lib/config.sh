@@ -31,11 +31,14 @@ _save_config() {
       fi ;;
   esac
   mkdir -p "$_CONFIG_DIR"
-  local tmpf; tmpf=$(mktemp)
-  [[ -f "$_CONFIG_FILE" ]] && grep -v "^${key}=" "$_CONFIG_FILE" > "$tmpf" 2>/dev/null || true
-  printf '%s=%s\n' "$key" "$value" >> "$tmpf"
-  sync "$tmpf" 2>/dev/null || true
-  mv "$tmpf" "$_CONFIG_FILE"
+  {
+    flock -x 9
+    local tmpf; tmpf=$(mktemp)
+    [[ -f "$_CONFIG_FILE" ]] && grep -v "^${key}=" "$_CONFIG_FILE" > "$tmpf" 2>/dev/null || true
+    printf '%s=%s\n' "$key" "$value" >> "$tmpf"
+    sync "$tmpf" 2>/dev/null || true
+    mv "$tmpf" "$_CONFIG_FILE"
+  } 9>"${_CONFIG_DIR}/.config.lock"
 }
 
 # _load_config — populate PROM_URL / IPERF3_SERVER from config (flags always win).

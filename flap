@@ -209,6 +209,9 @@ while getopts ":w:t:i:p:m:n:b:d:r:f:W:H:jvh" opt; do
          for _tp in "${_tpairs[@]}"; do
            _tp_iface="${_tp%%:*}"
            _tp_val="${_tp#*:}"
+           if ! [[ "$_tp_iface" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+             echo "Error: -t: invalid interface name '${_tp_iface}'." >&2; exit 2
+           fi
            if ! [[ "$_tp_val" =~ ^[0-9]+$ ]] || [[ "$_tp_val" -lt 2 ]]; then
              echo "Error: -t per-interface threshold for '${_tp_iface}' must be >= 2." >&2; exit 2
            fi
@@ -265,6 +268,13 @@ if [[ -n "$REMOTE_HOST" ]]; then
   timeout 300 ssh -o ConnectTimeout=10 -o BatchMode=yes "$REMOTE_HOST" \
     "bash '${_remote_tmp}' ${_remote_args_escaped}; _rc=\$?; rm -f '${_remote_tmp}'; exit \$_rc"
   exit $?
+fi
+
+# Validate --dut interface exists early (skip in test mode which uses a mock dir)
+if [[ -n "$DUT_IFACE" && -z "${_LINK_FLAP_TEST_DUT_DIR:-}" ]]; then
+  if ! ip link show "$DUT_IFACE" &>/dev/null; then
+    echo "Error: --dut: interface '$DUT_IFACE' not found." >&2; exit 2
+  fi
 fi
 
 # When wizard mode is active, pre-filter events to the target interface
@@ -924,13 +934,12 @@ if [[ -z "${_LINK_FLAP_TEST_INPUT:-}" ]] || [[ "${EVENT_LOG}" == */test-* ]]; th
       _el_t="${FLAPPING_TRANSITIONS[$_el_iface]:-0}"
       printf '%s\t%s\tFLAPPING\ttransitions=%s\n' "$_el_ts" "$_el_iface" "$_el_t" >> "$EVENT_LOG"
     done
+    # Rotate event log inside the lock to prevent concurrent rotation races
+    if [[ -f "$EVENT_LOG" ]] && (( $(wc -l < "$EVENT_LOG") > 10000 )); then
+      tail -n 10000 "$EVENT_LOG" > "${EVENT_LOG}.tmp" \
+        && mv "${EVENT_LOG}.tmp" "$EVENT_LOG"
+    fi
   ) 200>>"$EVENT_LOG"
-
-  # Rotate event log: keep last 10,000 lines
-  if [[ -f "$EVENT_LOG" ]] && (( $(wc -l < "$EVENT_LOG") > 10000 )); then
-    tail -n 10000 "$EVENT_LOG" > "${EVENT_LOG}.tmp" \
-      && mv "${EVENT_LOG}.tmp" "$EVENT_LOG"
-  fi
 
   # Prune reports older than 90 days
   [[ -d "${REPORT_DIR:-}" ]] && \

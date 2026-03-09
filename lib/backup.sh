@@ -70,7 +70,7 @@ do_rollback() {
       echo "  Restored: $name → $dst"
       (( restored++ )) || true
     else
-      echo "  ${YELLOW}Warning: could not restore $name (permission denied)${RESET}" >&2
+      echo "  ${YELLOW}Warning: could not restore $name (check permissions or available space)${RESET}" >&2
       (( failed++ )) || true
     fi
   done

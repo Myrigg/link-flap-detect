@@ -44,7 +44,7 @@ collect_from_tshark() {
   # Each TCN BPDU signals a spanning-tree port state change. Consecutive TCNs
   # from the same sender alternate DOWN/UP (first event = something went down,
   # second = recovery, etc.). We name the synthetic iface "stp-<last2octets>".
-  tshark -r "$pcap" -q -Y "stp.flags.tc == 1" \
+  timeout 30 tshark -r "$pcap" -q -Y "stp.flags.tc == 1" \
     -T fields -e frame.time_epoch -e eth.src \
     2>/dev/null \
   | awk -v iface_filter="$IFACE_FILTER" '
@@ -64,7 +64,7 @@ collect_from_tshark() {
   # Bit 3 of actor_state is the Synchronisation flag (value 8). When it falls
   # to 0 the bond member is no longer in sync → DOWN; when it rises → UP.
   # Emit a record only when the state transitions, to avoid duplicates.
-  tshark -r "$pcap" -q -Y "lacp" \
+  timeout 30 tshark -r "$pcap" -q -Y "lacp" \
     -T fields -e frame.time_epoch -e eth.src -e lacp.actor_state \
     2>/dev/null \
   | awk -v iface_filter="$IFACE_FILTER" '
@@ -204,9 +204,11 @@ parse_events() {
       # Guard against syslog timestamps without a year (e.g. "Dec 31 14:00:00").
       # date(1) picks the current year, producing a future epoch when the log entry
       # is from December and the tool runs in January. Pull it back one year.
+      # Use a 7-day grace window (not 1 day) so that DST transitions and NTP clock
+      # slew of a few hours do not incorrectly trigger the year rollback.
       # Assumption: syslog entries are at most ~1 year old. Logs >2 years old may
       # silently misparse — this is an inherent syslog limitation (no year field).
-      if ((result + 0) > (now + 86400))
+      if ((result + 0) > (now + 604800))
         result = result - 31536000
       epoch_cache[ts] = result
     }
